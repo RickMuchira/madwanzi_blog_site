@@ -1,10 +1,243 @@
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/pages/articles/index.tsx
+---BEGIN FILE CONTENTS---
+"use client"
+
+import { Head, Link, router } from "@inertiajs/react"
+import { Calendar, Clock, Edit, Plus, Trash, Terminal, Shield, Eye, FileCode, Lock, Search } from "lucide-react"
+import { Fragment, useState } from "react"
+
+import AppLayout from "@/layouts/app-layout"
+import type { BreadcrumbItem } from "@/types"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
+import { Badge } from "@/components/ui/badge"
+import { Input } from "@/components/ui/input"
+
+const breadcrumbs: BreadcrumbItem[] = [
+  {
+    title: "Dashboard",
+    href: route('dashboard'),
+  },
+  {
+    title: "Articles",
+    href: route('articles.index'),
+  },
+]
+
+export default function ArticlesIndex({ articles }) {
+  const [searchTerm, setSearchTerm] = useState("")
+
+  // Filter articles based on search term
+  const filteredArticles = articles.filter(
+    (article) =>
+      article.title?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      article.content?.toLowerCase().includes(searchTerm.toLowerCase()),
+  )
+
+  const handleCreateArticle = () => {
+    router.visit(route('articles.create'));
+  }
+
+  return (
+    <AppLayout breadcrumbs={breadcrumbs}>
+      <Head title="My Articles" />
+
+      <div className="p-4 md:p-6 flex flex-col space-y-6 bg-black/5 dark:bg-black/20">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex items-center space-x-2">
+            <Terminal className="h-5 w-5 text-green-500" />
+            <h1 className="text-2xl font-bold font-mono">Articles.list</h1>
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-2">
+            <div className="relative">
+              <Search className="absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-500" />
+              <Input
+                placeholder="Search articles..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="pl-8 bg-black/20 border-neutral-700 focus-visible:ring-green-500"
+              />
+            </div>
+
+            <Button 
+              onClick={handleCreateArticle}
+              className="bg-green-600 hover:bg-green-700 text-white"
+            >
+              <Plus className="h-4 w-4 mr-2" />
+              <span>Create New Article</span>
+            </Button>
+          </div>
+        </div>
+
+        {filteredArticles.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-neutral-700 bg-black/20 p-8 text-center">
+            <Terminal className="h-12 w-12 mx-auto mb-4 text-green-500 opacity-50" />
+            <h3 className="text-lg font-medium mb-2 font-mono">
+              {searchTerm ? "No matching articles found" : "No articles found in database"}
+            </h3>
+            <p className="text-neutral-500 mb-4">
+              {searchTerm ? "Try a different search term" : "Initialize your first article to begin"}
+            </p>
+            <Button 
+              onClick={handleCreateArticle}
+              className="bg-green-600 hover:bg-green-700 text-white"
+            >
+              <Plus className="h-4 w-4 mr-2" />
+              <span>Create New Article</span>
+            </Button>
+          </div>
+        ) : (
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {filteredArticles.map((article) => (
+              <Card
+                key={article.uuid}
+                className="flex flex-col border-neutral-800/50 bg-black/10 dark:bg-black/30 overflow-hidden hover:border-green-500/30 transition-colors"
+              >
+                <CardHeader className="pb-2">
+                  <div className="flex justify-between items-start">
+                    <CardTitle className="line-clamp-2 font-mono">
+                      <Link
+                        href={
+                          article.status === "published"
+                            ? route('articles.show', article.slug)
+                            : route('articles.edit', article.uuid)
+                        }
+                        className="hover:text-green-500 transition-colors"
+                      >
+                        {article.title || "Untitled Article"}
+                      </Link>
+                    </CardTitle>
+                    <Badge
+                      variant={article.status === "published" ? "default" : "outline"}
+                      className={
+                        article.status === "published"
+                          ? "bg-green-600 text-white hover:bg-green-700"
+                          : "border-amber-500 text-amber-500"
+                      }
+                    >
+                      {article.status === "published" ? (
+                        <Fragment>
+                          <Eye className="h-3 w-3 mr-1" />
+                          LIVE
+                        </Fragment>
+                      ) : (
+                        <Fragment>
+                          <Lock className="h-3 w-3 mr-1" />
+                          DRAFT
+                        </Fragment>
+                      )}
+                    </Badge>
+                  </div>
+                  <CardDescription className="flex items-center text-xs gap-1 text-neutral-500">
+                    {article.status === "published" && (
+                      <Fragment>
+                        <span className="inline-flex items-center gap-1">
+                          <Calendar className="h-3 w-3" />
+                          {new Date(article.published_at).toLocaleDateString()}
+                        </span>
+                      </Fragment>
+                    )}
+                  </CardDescription>
+                </CardHeader>
+
+                <CardContent className="flex-grow">
+                  <p className="text-neutral-400 line-clamp-3 font-mono text-sm">
+                    {article.content ? article.content.replace(/<[^>]*>/g, "").substring(0, 150) : "// No content yet"}
+                  </p>
+                </CardContent>
+
+                <div className="px-6 py-2 bg-black/20 text-xs text-neutral-500 flex items-center font-mono">
+                  <FileCode className="h-3 w-3 mr-1 text-green-500" />
+                  <span className="text-green-500">article</span>.<span className="text-amber-500">stats</span>
+                  <span className="mx-1">=</span>
+                  <Clock className="h-3 w-3 mx-1" />
+                  {article.reading_time} min read
+                </div>
+
+                <CardFooter className="flex justify-between border-t border-neutral-800/50 p-4 bg-black/10">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => router.visit(route('articles.edit', article.uuid))}
+                    className="border-neutral-700 bg-black/20 hover:bg-black/40 text-neutral-300"
+                  >
+                    <Edit className="h-4 w-4 mr-1" />
+                    Edit
+                  </Button>
+
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="border-neutral-700 bg-black/20 hover:bg-black/40 text-neutral-300"
+                      >
+                        <Trash className="h-4 w-4 mr-1 text-red-500" />
+                        Delete
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent className="bg-neutral-900 border-neutral-700">
+                      <AlertDialogHeader>
+                        <AlertDialogTitle className="text-red-500 font-mono flex items-center">
+                          <Shield className="h-5 w-5 mr-2 text-red-500" />
+                          WARNING: Destructive Action
+                        </AlertDialogTitle>
+                        <AlertDialogDescription className="font-mono">
+                          This will permanently delete the article and all associated data.
+                          <br />
+                          <br />
+                          <span className="text-red-500">This action cannot be undone.</span>
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel className="border-neutral-700 bg-black/20 hover:bg-black/40 text-neutral-300">
+                          Cancel
+                        </AlertDialogCancel>
+                        <AlertDialogAction asChild>
+                          <Link
+                            href={route('articles.destroy', article.uuid)}
+                            method="delete"
+                            as="button"
+                            className="bg-red-600 hover:bg-red-700 text-white"
+                          >
+                            Delete
+                          </Link>
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                </CardFooter>
+              </Card>
+            ))}
+          </div>
+        )}
+      </div>
+    </AppLayout>
+  )
+}
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/pages/articles/editor.tsx
+---BEGIN FILE CONTENTS---
 "use client"
 
 import type React from "react"
 import { Head, Link, router, useForm, usePage } from "@inertiajs/react"
 import {
   ArrowLeft,
-  Calendar,
   Clock,
   Eye,
   ImageIcon,
@@ -16,13 +249,13 @@ import {
   List,
   ListOrdered,
   Quote,
+  Braces,
   Bold,
   Italic,
   Heading1,
   Heading2,
   Heading3,
   FileImage,
-  CalendarDays,
 } from "lucide-react"
 import { useCallback, useState, useRef, useEffect } from "react"
 import debounce from "lodash/debounce"
@@ -42,8 +275,6 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-  DialogFooter,
-  DialogClose,
 } from "@/components/ui/dialog"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { toast } from "@/components/ui/use-toast"
@@ -84,16 +315,12 @@ export default function Editor({ article, isNewArticle }: EditorProps) {
   const [media, setMedia] = useState<MediaItem[]>([]);
   const [uploading, setUploading] = useState(false);
   const [activeTab, setActiveTab] = useState("write");
-  const [showScheduleDialog, setShowScheduleDialog] = useState(false);
-  const [scheduledDate, setScheduledDate] = useState<string>('');
-  const [scheduledTime, setScheduledTime] = useState<string>('12:00');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   
   // Breadcrumb items for navigation
   const breadcrumbItems: BreadcrumbItem[] = [
-    { title: "Dashboard", href: route("dashboard") },
-    { title: "Articles", href: route("articles.index") },
-    { title: isNewArticle ? "New Article" : "Edit Article", href: "#" },
+    { label: "Articles", href: route("articles.index") },
+    { label: isNewArticle ? "New Article" : "Edit Article", href: "#" },
   ];
 
   // Setup form with Inertia
@@ -232,70 +459,6 @@ export default function Editor({ article, isNewArticle }: EditorProps) {
     }
   };
 
-  // Schedule article for future publication
-  const handleScheduleArticle = async () => {
-    if (!data.title.trim() || !data.content.trim()) {
-      toast({
-        title: "Missing Content",
-        description: "Please add a title and content before scheduling",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    if (!scheduledDate) {
-      toast({
-        title: "Missing Date",
-        description: "Please select a publication date",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    try {
-      // Create a date object from the selected date and time
-      const scheduledDateTime = new Date(`${scheduledDate}T${scheduledTime}`);
-      
-      // Check if the date is valid and in the future
-      if (isNaN(scheduledDateTime.getTime()) || scheduledDateTime <= new Date()) {
-        toast({
-          title: "Invalid Date",
-          description: "Please select a date and time in the future",
-          variant: "destructive",
-        });
-        return;
-      }
-
-      const response = await axios.post(`/articles/${article.uuid}/schedule`, {
-        uuid: article.uuid,
-        scheduled_at: scheduledDateTime.toISOString(),
-      });
-      
-      if (response.data.success) {
-        setShowScheduleDialog(false);
-        toast({
-          title: "Article Scheduled",
-          description: response.data.message || "Your article has been scheduled for publication",
-        });
-        // Redirect to the articles index page
-        router.visit(route('articles.index'));
-      } else {
-        toast({
-          title: "Error",
-          description: response.data.message || "Failed to schedule article",
-          variant: "destructive",
-        });
-      }
-    } catch (error) {
-      console.error('Error scheduling article:', error);
-      toast({
-        title: "Error",
-        description: "Failed to schedule article",
-        variant: "destructive",
-      });
-    }
-  };
-
   // Publish article
   const handlePublish = async () => {
     if (!data.title.trim() || !data.content.trim()) {
@@ -317,14 +480,7 @@ export default function Editor({ article, isNewArticle }: EditorProps) {
           title: "Published",
           description: "Your article has been published successfully",
         });
-        // Navigate to the published article
         router.visit(response.data.article_url);
-      } else {
-        toast({
-          title: "Error",
-          description: response.data.message || "Failed to publish article",
-          variant: "destructive",
-        });
       }
     } catch (error) {
       console.error('Error publishing article:', error);
@@ -470,15 +626,8 @@ export default function Editor({ article, isNewArticle }: EditorProps) {
     return { __html: sanitizedHtml };
   };
 
-  // Get tomorrow's date in YYYY-MM-DD format for the date input min value
-  const getTomorrowDateString = () => {
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    return tomorrow.toISOString().split('T')[0];
-  };
-
   return (
-    <AppLayout breadcrumbs={breadcrumbItems}>
+    <AppLayout title={data.title || 'New Article'} breadcrumbs={breadcrumbItems}>
       <Head title={data.title || 'New Article'} />
 
       <div className="container mx-auto py-6">
@@ -511,18 +660,6 @@ export default function Editor({ article, isNewArticle }: EditorProps) {
               <Eye className="w-4 h-4 mr-2" />
               Preview
             </Button>
-            
-            {/* Schedule Button */}
-            <Button 
-              variant="outline" 
-              size="sm" 
-              onClick={() => setShowScheduleDialog(true)}
-            >
-              <CalendarDays className="w-4 h-4 mr-2" />
-              Schedule
-            </Button>
-            
-            {/* Publish Button */}
             <Button 
               variant="default" 
               size="sm" 
@@ -532,64 +669,6 @@ export default function Editor({ article, isNewArticle }: EditorProps) {
             </Button>
           </div>
         </div>
-
-        {/* Schedule dialog */}
-        <Dialog open={showScheduleDialog} onOpenChange={setShowScheduleDialog}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Schedule Publication</DialogTitle>
-              <DialogDescription>
-                Choose when you want this article to be automatically published.
-              </DialogDescription>
-            </DialogHeader>
-            
-            <div className="flex flex-col gap-4 py-4">
-              <div className="grid gap-2">
-                <label htmlFor="schedule-date" className="text-sm font-medium">
-                  Publication Date
-                </label>
-                <Input
-                  id="schedule-date"
-                  type="date"
-                  value={scheduledDate}
-                  onChange={(e) => setScheduledDate(e.target.value)}
-                  min={getTomorrowDateString()}
-                  className="w-full"
-                />
-              </div>
-              
-              <div className="grid gap-2">
-                <label htmlFor="schedule-time" className="text-sm font-medium">
-                  Publication Time
-                </label>
-                <Input
-                  id="schedule-time"
-                  type="time"
-                  value={scheduledTime}
-                  onChange={(e) => setScheduledTime(e.target.value)}
-                  className="w-full"
-                />
-              </div>
-              
-              {scheduledDate && (
-                <div className="mt-2 p-3 bg-muted rounded-md">
-                  <p className="text-sm">
-                    Your article will be published on <strong>{scheduledDate}</strong> at <strong>{scheduledTime}</strong>.
-                  </p>
-                </div>
-              )}
-            </div>
-            
-            <DialogFooter>
-              <DialogClose asChild>
-                <Button variant="outline">Cancel</Button>
-              </DialogClose>
-              <Button onClick={handleScheduleArticle} disabled={!scheduledDate}>
-                Schedule Publication
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
 
         {/* Preview link */}
         {showPreviewLink && (
@@ -886,3 +965,87 @@ export default function Editor({ article, isNewArticle }: EditorProps) {
     </AppLayout>
   );
 }
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/calendar.tsx
+---BEGIN FILE CONTENTS---
+"use client"
+
+import * as React from "react"
+import { ChevronLeft, ChevronRight } from "lucide-react"
+import { DayPicker } from "react-day-picker"
+
+import { cn } from "@/lib/utils"
+import { buttonVariants } from "@/components/ui/button"
+
+function Calendar({
+  className,
+  classNames,
+  showOutsideDays = true,
+  ...props
+}: React.ComponentProps<typeof DayPicker>) {
+  return (
+    <DayPicker
+      showOutsideDays={showOutsideDays}
+      className={cn("p-3", className)}
+      classNames={{
+        months: "flex flex-col sm:flex-row gap-2",
+        month: "flex flex-col gap-4",
+        caption: "flex justify-center pt-1 relative items-center w-full",
+        caption_label: "text-sm font-medium",
+        nav: "flex items-center gap-1",
+        nav_button: cn(
+          buttonVariants({ variant: "outline" }),
+          "size-7 bg-transparent p-0 opacity-50 hover:opacity-100"
+        ),
+        nav_button_previous: "absolute left-1",
+        nav_button_next: "absolute right-1",
+        table: "w-full border-collapse space-x-1",
+        head_row: "flex",
+        head_cell:
+          "text-muted-foreground rounded-md w-8 font-normal text-[0.8rem]",
+        row: "flex w-full mt-2",
+        cell: cn(
+          "relative p-0 text-center text-sm focus-within:relative focus-within:z-20 [&:has([aria-selected])]:bg-accent [&:has([aria-selected].day-range-end)]:rounded-r-md",
+          props.mode === "range"
+            ? "[&:has(>.day-range-end)]:rounded-r-md [&:has(>.day-range-start)]:rounded-l-md first:[&:has([aria-selected])]:rounded-l-md last:[&:has([aria-selected])]:rounded-r-md"
+            : "[&:has([aria-selected])]:rounded-md"
+        ),
+        day: cn(
+          buttonVariants({ variant: "ghost" }),
+          "size-8 p-0 font-normal aria-selected:opacity-100"
+        ),
+        day_range_start:
+          "day-range-start aria-selected:bg-primary aria-selected:text-primary-foreground",
+        day_range_end:
+          "day-range-end aria-selected:bg-primary aria-selected:text-primary-foreground",
+        day_selected:
+          "bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground focus:bg-primary focus:text-primary-foreground",
+        day_today: "bg-accent text-accent-foreground",
+        day_outside:
+          "day-outside text-muted-foreground aria-selected:text-muted-foreground",
+        day_disabled: "text-muted-foreground opacity-50",
+        day_range_middle:
+          "aria-selected:bg-accent aria-selected:text-accent-foreground",
+        day_hidden: "invisible",
+        ...classNames,
+      }}
+      components={{
+        IconLeft: ({ className, ...props }) => (
+          <ChevronLeft className={cn("size-4", className)} {...props} />
+        ),
+        IconRight: ({ className, ...props }) => (
+          <ChevronRight className={cn("size-4", className)} {...props} />
+        ),
+      }}
+      {...props}
+    />
+  )
+}
+
+export { Calendar }
+
+---END FILE CONTENTS---
+
+

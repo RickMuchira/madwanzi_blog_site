@@ -18,8 +18,9 @@ return new class extends Migration
             $table->string('title')->nullable();
             $table->string('slug')->unique()->nullable();
             $table->text('content')->nullable();
-            $table->enum('status', ['draft', 'published'])->default('draft');
+            $table->enum('status', ['draft', 'scheduled', 'published'])->default('draft');
             $table->timestamp('published_at')->nullable();
+            $table->timestamp('scheduled_at')->nullable(); // Added scheduled_at column
             $table->json('seo_data')->nullable();
             $table->integer('word_count')->default(0);
             $table->integer('reading_time')->default(0);

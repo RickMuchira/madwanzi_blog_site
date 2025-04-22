@@ -15,520 +15,567 @@ use Inertia\Inertia;
 
 class ArticleController extends Controller
 {
-    /**
-     * Display a listing of the articles.
-     */
-    public function index()
-    {
-        try {
-            $articles = Auth::user()->articles()
-                ->orderBy('updated_at', 'desc')
-                ->get();
-                
-            return Inertia::render('articles/index', [
-                'articles' => $articles,
-            ]);
-        } catch (\Exception $e) {
-            Log::error('Error fetching articles: ' . $e->getMessage());
-            return back()->with('error', 'Could not load articles.');
-        }
-    }
+   /**
+    * Display a listing of the articles.
+    */
+   public function index()
+   {
+       try {
+           $articles = Auth::user()->articles()
+               ->orderBy('updated_at', 'desc')
+               ->get();
+               
+           return Inertia::render('articles/index', [
+               'articles' => $articles,
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error fetching articles: ' . $e->getMessage());
+           return back()->with('error', 'Could not load articles.');
+       }
+   }
 
-    /**
-     * Show the form for creating a new article.
-     */
-    public function create()
-    {
-        try {
-            // Create a temporary slug for the draft article
-            $tempSlug = 'draft-' . Str::random(10);
-            
-            // Create a new draft article
-            $article = Auth::user()->articles()->create([
-                'title' => '',
-                'content' => '',
-                'status' => 'draft',
-                'uuid' => Str::uuid(),
-                'slug' => $tempSlug, // Add temporary slug
-            ]);
-            
-            Log::info('Created new article', ['article_id' => $article->id, 'uuid' => $article->uuid]);
-            
-            return Inertia::render('articles/editor', [
-                'article' => $article,
-                'isNewArticle' => true,
-            ]);
-        } catch (\Exception $e) {
-            // Log the error
-            Log::error('Failed to create article: ' . $e->getMessage(), [
-                'exception' => $e,
-                'user_id' => Auth::id()
-            ]);
-            
-            // Return error response
-            return back()->with('error', 'Failed to create article. Please try again.');
-        }
-    }
+   /**
+    * Show the form for creating a new article.
+    */
+   public function create()
+   {
+       try {
+           // Create a temporary slug for the draft article
+           $tempSlug = 'draft-' . Str::random(10);
+           
+           // Create a new draft article
+           $article = Auth::user()->articles()->create([
+               'title' => '',
+               'content' => '',
+               'status' => 'draft',
+               'uuid' => Str::uuid(),
+               'slug' => $tempSlug, // Add temporary slug
+           ]);
+           
+           Log::info('Created new article', ['article_id' => $article->id, 'uuid' => $article->uuid]);
+           
+           return Inertia::render('articles/editor', [
+               'article' => $article,
+               'isNewArticle' => true,
+           ]);
+       } catch (\Exception $e) {
+           // Log the error
+           Log::error('Failed to create article: ' . $e->getMessage(), [
+               'exception' => $e,
+               'user_id' => Auth::id()
+           ]);
+           
+           // Return error response
+           return back()->with('error', 'Failed to create article. Please try again.');
+       }
+   }
 
-    /**
-     * Store a newly created article in storage.
-     */
-    public function store(Request $request)
-    {
-        try {
-            Log::info('Article store attempt', ['data' => $request->all()]);
-            
-            $validated = $request->validate([
-                'uuid' => 'required|string|exists:articles,uuid',
-                'title' => 'nullable|string|max:255',
-                'content' => 'nullable|string',
-            ]);
-            
-            $article = Article::where('uuid', $validated['uuid'])
-                ->where('user_id', Auth::id())
-                ->first();
-                
-            if (!$article) {
-                Log::warning('Article not found during save', ['uuid' => $validated['uuid'], 'user_id' => Auth::id()]);
-                return response()->json(['error' => 'Article not found'], 404);
-            }
-            
-            // Update the article with new data
-            $article->update([
-                'title' => $validated['title'] ?? $article->title,
-                'content' => $validated['content'] ?? $article->content,
-            ]);
-            
-            // If title is updated, update the slug too (for draft articles)
-            if (isset($validated['title']) && $article->status === 'draft') {
-                $this->updateArticleSlug($article, $validated['title']);
-            }
-            
-            $article->updateWordStats();
-            
-            // Create a version snapshot
-            $article->createVersionSnapshot();
-            
-            Log::info('Article saved successfully', ['article_id' => $article->id, 'uuid' => $article->uuid]);
-            
-            return back()->with('success', 'Article saved successfully');
-        } catch (\Exception $e) {
-            Log::error('Error saving article: ' . $e->getMessage(), [
-                'exception' => $e,
-                'request_data' => $request->all()
-            ]);
-            
-            return response()->json(['error' => 'Failed to save article: ' . $e->getMessage()], 500);
-        }
-    }
+   /**
+    * Store a newly created article in storage.
+    */
+   public function store(Request $request)
+   {
+       try {
+           Log::info('Article store attempt', ['data' => $request->all()]);
+           
+           $validated = $request->validate([
+               'uuid' => 'required|string|exists:articles,uuid',
+               'title' => 'nullable|string|max:255',
+               'content' => 'nullable|string',
+           ]);
+           
+           $article = Article::where('uuid', $validated['uuid'])
+               ->where('user_id', Auth::id())
+               ->first();
+               
+           if (!$article) {
+               Log::warning('Article not found during save', ['uuid' => $validated['uuid'], 'user_id' => Auth::id()]);
+               return response()->json(['error' => 'Article not found'], 404);
+           }
+           
+           // Update the article with new data
+           $article->update([
+               'title' => $validated['title'] ?? $article->title,
+               'content' => $validated['content'] ?? $article->content,
+           ]);
+           
+           // If title is updated, update the slug too (for draft articles)
+           if (isset($validated['title']) && $article->status === 'draft') {
+               $this->updateArticleSlug($article, $validated['title']);
+           }
+           
+           $article->updateWordStats();
+           
+           // Create a version snapshot
+           $article->createVersionSnapshot();
+           
+           Log::info('Article saved successfully', ['article_id' => $article->id, 'uuid' => $article->uuid]);
+           
+           return back()->with('success', 'Article saved successfully');
+       } catch (\Exception $e) {
+           Log::error('Error saving article: ' . $e->getMessage(), [
+               'exception' => $e,
+               'request_data' => $request->all()
+           ]);
+           
+           return response()->json(['error' => 'Failed to save article: ' . $e->getMessage()], 500);
+       }
+   }
 
-    /**
-     * Update the article title.
-     */
-    public function updateTitle(Request $request)
-    {
-        try {
-            Log::info('Title update attempt', ['data' => $request->all()]);
-            
-            $validated = $request->validate([
-                'uuid' => 'required|string|exists:articles,uuid',
-                'title' => 'required|string|max:255',
-            ]);
-            
-            $article = Article::where('uuid', $validated['uuid'])
-                ->where('user_id', Auth::id())
-                ->first();
-                
-            if (!$article) {
-                Log::warning('Article not found during title update', ['uuid' => $validated['uuid'], 'user_id' => Auth::id()]);
-                return response()->json(['error' => 'Article not found'], 404);
-            }
-            
-            // Update the article title
-            $article->update([
-                'title' => $validated['title'],
-            ]);
-            
-            // Update the slug if the article is a draft
-            if ($article->status === 'draft') {
-                $this->updateArticleSlug($article, $validated['title']);
-            }
-            
-            Log::info('Article title updated successfully', ['article_id' => $article->id, 'uuid' => $article->uuid]);
-            
-            return response()->json([
-                'success' => true,
-                'slug' => $article->slug,
-            ]);
-        } catch (\Exception $e) {
-            Log::error('Error updating article title: ' . $e->getMessage(), [
-                'exception' => $e,
-                'request_data' => $request->all()
-            ]);
-            
-            return response()->json(['error' => 'Failed to update title: ' . $e->getMessage()], 500);
-        }
-    }
+   /**
+    * Update the article title.
+    */
+   public function updateTitle(Request $request)
+   {
+       try {
+           Log::info('Title update attempt', ['data' => $request->all()]);
+           
+           $validated = $request->validate([
+               'uuid' => 'required|string|exists:articles,uuid',
+               'title' => 'required|string|max:255',
+           ]);
+           
+           $article = Article::where('uuid', $validated['uuid'])
+               ->where('user_id', Auth::id())
+               ->first();
+               
+           if (!$article) {
+               Log::warning('Article not found during title update', ['uuid' => $validated['uuid'], 'user_id' => Auth::id()]);
+               return response()->json(['error' => 'Article not found'], 404);
+           }
+           
+           // Update the article title
+           $article->update([
+               'title' => $validated['title'],
+           ]);
+           
+           // Update the slug if the article is a draft
+           if ($article->status === 'draft') {
+               $this->updateArticleSlug($article, $validated['title']);
+           }
+           
+           Log::info('Article title updated successfully', ['article_id' => $article->id, 'uuid' => $article->uuid]);
+           
+           return response()->json([
+               'success' => true,
+               'slug' => $article->slug,
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error updating article title: ' . $e->getMessage(), [
+               'exception' => $e,
+               'request_data' => $request->all()
+           ]);
+           
+           return response()->json(['error' => 'Failed to update title: ' . $e->getMessage()], 500);
+       }
+   }
 
-    /**
-     * Helper method to update an article's slug based on title
-     */
-    private function updateArticleSlug(Article $article, string $title)
-    {
-        if (empty($title)) {
-            // Keep existing slug if title is empty
-            return;
-        }
-        
-        // Generate base slug from title
-        $baseSlug = Str::slug($title);
-        
-        // If the slug is empty (e.g., title has only special characters),
-        // use a fallback
-        if (empty($baseSlug)) {
-            $baseSlug = 'article';
-        }
-        
-        $slug = $baseSlug;
-        $counter = 1;
-        
-        // Check for slug uniqueness
-        while (Article::where('slug', $slug)
-                ->where('id', '!=', $article->id)
-                ->exists()) {
-            $slug = $baseSlug . '-' . $counter;
-            $counter++;
-        }
-        
-        // Update the article with the new slug
-        $article->update(['slug' => $slug]);
-        
-        return $slug;
-    }
+   /**
+    * Helper method to update an article's slug based on title
+    */
+   private function updateArticleSlug(Article $article, string $title)
+   {
+       if (empty($title)) {
+           // Keep existing slug if title is empty
+           return;
+       }
+       
+       // Generate base slug from title
+       $baseSlug = Str::slug($title);
+       
+       // If the slug is empty (e.g., title has only special characters),
+       // use a fallback
+       if (empty($baseSlug)) {
+           $baseSlug = 'article';
+       }
+       
+       $slug = $baseSlug;
+       $counter = 1;
+       
+       // Check for slug uniqueness
+       while (Article::where('slug', $slug)
+               ->where('id', '!=', $article->id)
+               ->exists()) {
+           $slug = $baseSlug . '-' . $counter;
+           $counter++;
+       }
+       
+       // Update the article with the new slug
+       $article->update(['slug' => $slug]);
+       
+       return $slug;
+   }
 
-    /**
-     * Update the article content.
-     */
-    public function updateContent(Request $request)
-    {
-        try {
-            Log::info('Content update attempt', ['uuid' => $request->uuid]);
-            
-            $validated = $request->validate([
-                'uuid' => 'required|string|exists:articles,uuid',
-                'content' => 'nullable|string',
-            ]);
-            
-            $article = Article::where('uuid', $validated['uuid'])
-                ->where('user_id', Auth::id())
-                ->first();
-                
-            if (!$article) {
-                Log::warning('Article not found during content update', ['uuid' => $validated['uuid'], 'user_id' => Auth::id()]);
-                return response()->json(['error' => 'Article not found'], 404);
-            }
-                
-            $article->update([
-                'content' => $validated['content'],
-            ]);
-            
-            $article->updateWordStats();
-            
-            Log::info('Article content updated successfully', ['article_id' => $article->id, 'uuid' => $article->uuid]);
-            
-            return response()->json([
-                'success' => true,
-                'word_count' => $article->word_count,
-                'reading_time' => $article->reading_time,
-            ]);
-        } catch (\Exception $e) {
-            Log::error('Error updating article content: ' . $e->getMessage(), [
-                'exception' => $e,
-                'request_data' => ['uuid' => $request->uuid]
-            ]);
-            
-            return response()->json(['error' => 'Failed to update content: ' . $e->getMessage()], 500);
-        }
-    }
+   /**
+    * Update the article content.
+    */
+   public function updateContent(Request $request)
+   {
+       try {
+           Log::info('Content update attempt', ['uuid' => $request->uuid]);
+           
+           $validated = $request->validate([
+               'uuid' => 'required|string|exists:articles,uuid',
+               'content' => 'nullable|string',
+           ]);
+           
+           $article = Article::where('uuid', $validated['uuid'])
+               ->where('user_id', Auth::id())
+               ->first();
+               
+           if (!$article) {
+               Log::warning('Article not found during content update', ['uuid' => $validated['uuid'], 'user_id' => Auth::id()]);
+               return response()->json(['error' => 'Article not found'], 404);
+           }
+               
+           $article->update([
+               'content' => $validated['content'],
+           ]);
+           
+           $article->updateWordStats();
+           
+           Log::info('Article content updated successfully', ['article_id' => $article->id, 'uuid' => $article->uuid]);
+           
+           return response()->json([
+               'success' => true,
+               'word_count' => $article->word_count,
+               'reading_time' => $article->reading_time,
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error updating article content: ' . $e->getMessage(), [
+               'exception' => $e,
+               'request_data' => ['uuid' => $request->uuid]
+           ]);
+           
+           return response()->json(['error' => 'Failed to update content: ' . $e->getMessage()], 500);
+       }
+   }
 
-    /**
-     * Display the specified article for editing.
-     */
-    public function edit(string $uuid)
-    {
-        try {
-            $article = Article::where('uuid', $uuid)
-                ->where('user_id', Auth::id())
-                ->firstOrFail();
-                
-            return Inertia::render('articles/editor', [
-                'article' => $article,
-                'isNewArticle' => false,
-            ]);
-        } catch (\Exception $e) {
-            Log::error('Error loading article for edit: ' . $e->getMessage(), [
-                'exception' => $e,
-                'uuid' => $uuid,
-                'user_id' => Auth::id()
-            ]);
-            
-            return redirect()->route('articles.index')->with('error', 'Article not found or access denied.');
-        }
-    }
+   /**
+    * Display the specified article for editing.
+    */
+   public function edit(string $uuid)
+   {
+       try {
+           $article = Article::where('uuid', $uuid)
+               ->where('user_id', Auth::id())
+               ->firstOrFail();
+               
+           return Inertia::render('articles/editor', [
+               'article' => $article,
+               'isNewArticle' => false,
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error loading article for edit: ' . $e->getMessage(), [
+               'exception' => $e,
+               'uuid' => $uuid,
+               'user_id' => Auth::id()
+           ]);
+           
+           return redirect()->route('articles.index')->with('error', 'Article not found or access denied.');
+       }
+   }
 
-    /**
-     * Generate a preview link for the article.
-     */
-    public function preview(Request $request)
-    {
-        try {
-            $validated = $request->validate([
-                'uuid' => 'required|string|exists:articles,uuid',
-            ]);
-            
-            $article = Article::where('uuid', $validated['uuid'])
-                ->where('user_id', Auth::id())
-                ->firstOrFail();
-                
-            // Generate a temporary token for preview access
-            $previewToken = Str::random(32);
-            
-            // Store the token in cache with an expiration
-            cache()->put('preview_' . $previewToken, $article->uuid, now()->addHours(24));
-            
-            $previewUrl = route('articles.preview.show', ['token' => $previewToken]);
-            
-            return response()->json([
-                'preview_url' => $previewUrl,
-            ]);
-        } catch (\Exception $e) {
-            Log::error('Error generating preview: ' . $e->getMessage(), [
-                'exception' => $e,
-                'request_data' => $request->all()
-            ]);
-            
-            return response()->json(['error' => 'Failed to generate preview link'], 500);
-        }
-    }
+   /**
+    * Generate a preview link for the article.
+    */
+   public function preview(Request $request)
+   {
+       try {
+           $validated = $request->validate([
+               'uuid' => 'required|string|exists:articles,uuid',
+           ]);
+           
+           $article = Article::where('uuid', $validated['uuid'])
+               ->where('user_id', Auth::id())
+               ->firstOrFail();
+               
+           // Generate a temporary token for preview access
+           $previewToken = Str::random(32);
+           
+           // Store the token in cache with an expiration
+           cache()->put('preview_' . $previewToken, $article->uuid, now()->addHours(24));
+           
+           $previewUrl = route('articles.preview.show', ['token' => $previewToken]);
+           
+           return response()->json([
+               'preview_url' => $previewUrl,
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error generating preview: ' . $e->getMessage(), [
+               'exception' => $e,
+               'request_data' => $request->all()
+           ]);
+           
+           return response()->json(['error' => 'Failed to generate preview link'], 500);
+       }
+   }
 
-    /**
-     * Show the preview of an article.
-     */
-    public function showPreview(string $token)
-    {
-        try {
-            $articleUuid = cache()->get('preview_' . $token);
-            
-            if (!$articleUuid) {
-                abort(404);
-            }
-            
-            $article = Article::where('uuid', $articleUuid)->firstOrFail();
-            
-            return Inertia::render('articles/preview', [
-                'article' => $article,
-                'author' => $article->author,
-                'isPreview' => true,
-            ]);
-        } catch (\Exception $e) {
-            Log::error('Error showing preview: ' . $e->getMessage(), [
-                'exception' => $e,
-                'token' => $token
-            ]);
-            
-            return redirect()->route('dashboard')->with('error', 'Preview not available or has expired.');
-        }
-    }
+   /**
+    * Show the preview of an article.
+    */
+   public function showPreview(string $token)
+   {
+       try {
+           $articleUuid = cache()->get('preview_' . $token);
+           
+           if (!$articleUuid) {
+               abort(404);
+           }
+           
+           $article = Article::where('uuid', $articleUuid)->firstOrFail();
+           
+           return Inertia::render('articles/preview', [
+               'article' => $article,
+               'author' => $article->author,
+               'isPreview' => true,
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error showing preview: ' . $e->getMessage(), [
+               'exception' => $e,
+               'token' => $token
+           ]);
+           
+           return redirect()->route('dashboard')->with('error', 'Preview not available or has expired.');
+       }
+   }
 
-    /**
-     * Publish the article.
-     */
-    public function publish(Request $request)
-    {
-        try {
-            $validated = $request->validate([
-                'uuid' => 'required|string|exists:articles,uuid',
-            ]);
-            
-            $article = Article::where('uuid', $validated['uuid'])
-                ->where('user_id', Auth::id())
-                ->firstOrFail();
-                
-            if (empty($article->title) || empty($article->content)) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Article must have a title and content to be published.',
-                ], 422);
-            }
-            
-            // Ensure the slug is based on the title before publishing
-            $this->updateArticleSlug($article, $article->title);
-            
-            $article->update([
-                'status' => 'published',
-                'published_at' => now(),
-            ]);
-            
-            // Create a version snapshot on publish
-            $article->createVersionSnapshot('Published Version');
-            
-            return response()->json([
-                'success' => true,
-                'article_url' => route('articles.show', $article->slug),
-            ]);
-        } catch (\Exception $e) {
-            Log::error('Error publishing article: ' . $e->getMessage(), [
-                'exception' => $e,
-                'request_data' => $request->all()
-            ]);
-            
-            return response()->json(['error' => 'Failed to publish article'], 500);
-        }
-    }
+   /**
+    * Schedule an article for future publication.
+    */
+   public function schedule(Request $request)
+   {
+       try {
+           $validated = $request->validate([
+               'uuid' => 'required|string|exists:articles,uuid',
+               'scheduled_at' => 'required|date|after:now',
+           ]);
+           
+           $article = Article::where('uuid', $validated['uuid'])
+               ->where('user_id', Auth::id())
+               ->firstOrFail();
+               
+           if (empty($article->title) || empty($article->content)) {
+               return response()->json([
+                   'success' => false,
+                   'message' => 'Article must have a title and content to be scheduled.',
+               ], 422);
+           }
+           
+           // Ensure the slug is based on the title before scheduling
+           $this->updateArticleSlug($article, $article->title);
+           
+           $article->update([
+               'status' => 'scheduled',
+               'scheduled_at' => $validated['scheduled_at'],
+           ]);
+           
+           // Create a version snapshot on scheduling
+           $article->createVersionSnapshot('Scheduled Version');
+           
+           return response()->json([
+               'success' => true,
+               'message' => 'Article scheduled for publication on ' . $validated['scheduled_at'],
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error scheduling article: ' . $e->getMessage(), [
+               'exception' => $e,
+               'request_data' => $request->all()
+           ]);
+           
+           return response()->json(['error' => 'Failed to schedule article'], 500);
+       }
+   }
 
-    /**
-     * Display the published article.
-     */
-    public function show(string $slug)
-    {
-        try {
-            $article = Article::where('slug', $slug)
-                ->published()
-                ->firstOrFail();
-                
-            return Inertia::render('articles/show', [
-                'article' => $article,
-                'author' => $article->author,
-                'isPreview' => false,
-            ]);
-        } catch (\Exception $e) {
-            Log::error('Error showing article: ' . $e->getMessage(), [
-                'exception' => $e,
-                'slug' => $slug
-            ]);
-            
-            return redirect()->route('dashboard')->with('error', 'Article not found.');
-        }
-    }
+   /**
+    * Publish the article.
+    */
+   public function publish(Request $request)
+   {
+       try {
+           $validated = $request->validate([
+               'uuid' => 'required|string|exists:articles,uuid',
+           ]);
+           
+           $article = Article::where('uuid', $validated['uuid'])
+               ->where('user_id', Auth::id())
+               ->firstOrFail();
+               
+           if (empty($article->title) || empty($article->content)) {
+               return response()->json([
+                   'success' => false,
+                   'message' => 'Article must have a title and content to be published.',
+               ], 422);
+           }
+           
+           // Ensure the slug is based on the title before publishing
+           $this->updateArticleSlug($article, $article->title);
+           
+           $article->update([
+               'status' => 'published',
+               'published_at' => now(),
+           ]);
+           
+           // Create a version snapshot on publish
+           $article->createVersionSnapshot('Published Version');
+           
+           return response()->json([
+               'success' => true,
+               'article_url' => route('articles.show', $article->slug),
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error publishing article: ' . $e->getMessage(), [
+               'exception' => $e,
+               'request_data' => $request->all()
+           ]);
+           
+           return response()->json(['error' => 'Failed to publish article'], 500);
+       }
+   }
 
-    /**
-     * Upload media for the article.
-     */
-    public function uploadMedia(Request $request)
-    {
-        try {
-            $request->validate([
-                'file' => 'required|file|max:10240|mimes:jpeg,png,jpg,gif,svg',
-                'article_uuid' => 'required|string|exists:articles,uuid',
-            ]);
-            
-            $article = Article::where('uuid', $request->article_uuid)
-                ->where('user_id', Auth::id())
-                ->firstOrFail();
-                
-            $file = $request->file('file');
-            $filename = Str::uuid() . '.' . $file->getClientOriginalExtension();
-            $path = $file->storeAs('media', $filename, 'public');
-            
-            // Create media record
-            $media = Media::create([
-                'user_id' => Auth::id(),
-                'original_name' => $file->getClientOriginalName(),
-                'filename' => $filename,
-                'mime_type' => $file->getMimeType(),
-                'path' => $path,
-                'size' => $file->getSize(),
-                'metadata' => [
-                    'width' => getimagesize($file->path())[0] ?? null,
-                    'height' => getimagesize($file->path())[1] ?? null,
-                ],
-            ]);
-            
-            // Attach media to article
-            $article->media()->attach($media->id);
-            
-            return response()->json([
-                'success' => true,
-                'media' => [
-                    'id' => $media->id,
-                    'url' => $media->url,
-                    'filename' => $media->original_name,
-                    'mime_type' => $media->mime_type,
-                ],
-            ]);
-        } catch (\Exception $e) {
-            Log::error('Error uploading media: ' . $e->getMessage(), [
-                'exception' => $e,
-                'request_data' => $request->all()
-            ]);
-            
-            return response()->json(['error' => 'Failed to upload media: ' . $e->getMessage()], 500);
-        }
-    }
+   /**
+    * Display the published article.
+    */
+   public function show(string $slug)
+   {
+       try {
+           $article = Article::where('slug', $slug)
+               ->published()
+               ->firstOrFail();
+               
+           return Inertia::render('articles/show', [
+               'article' => $article,
+               'author' => $article->author,
+               'isPreview' => false,
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error showing article: ' . $e->getMessage(), [
+               'exception' => $e,
+               'slug' => $slug
+           ]);
+           
+           return redirect()->route('dashboard')->with('error', 'Article not found.');
+       }
+   }
 
-    /**
-     * Get media for an article.
-     */
-    public function getArticleMedia(string $uuid)
-    {
-        try {
-            $article = Article::where('uuid', $uuid)
-                ->where('user_id', Auth::id())
-                ->firstOrFail();
-                
-            $media = $article->media()->get()->map(function ($item) {
-                return [
-                    'id' => $item->id,
-                    'url' => $item->url,
-                    'filename' => $item->original_name,
-                    'mime_type' => $item->mime_type,
-                ];
-            });
-            
-            return response()->json([
-                'success' => true,
-                'media' => $media,
-            ]);
-        } catch (\Exception $e) {
-            Log::error('Error fetching article media: ' . $e->getMessage(), [
-                'exception' => $e,
-                'uuid' => $uuid
-            ]);
-            
-            return response()->json(['error' => 'Failed to fetch media'], 500);
-        }
-    }
+   /**
+    * Upload media for the article.
+    */
+   public function uploadMedia(Request $request)
+   {
+       try {
+           $request->validate([
+               'file' => 'required|file|max:10240|mimes:jpeg,png,jpg,gif,svg',
+               'article_uuid' => 'required|string|exists:articles,uuid',
+           ]);
+           
+           $article = Article::where('uuid', $request->article_uuid)
+               ->where('user_id', Auth::id())
+               ->firstOrFail();
+               
+           $file = $request->file('file');
+           $filename = Str::uuid() . '.' . $file->getClientOriginalExtension();
+           $path = $file->storeAs('media', $filename, 'public');
+           
+           // Create media record
+           $media = Media::create([
+               'user_id' => Auth::id(),
+               'original_name' => $file->getClientOriginalName(),
+               'filename' => $filename,
+               'mime_type' => $file->getMimeType(),
+               'path' => $path,
+               'size' => $file->getSize(),
+               'metadata' => [
+                   'width' => getimagesize($file->path())[0] ?? null,
+                   'height' => getimagesize($file->path())[1] ?? null,
+               ],
+           ]);
+           
+           // Attach media to article
+           $article->media()->attach($media->id);
+           
+           return response()->json([
+               'success' => true,
+               'media' => [
+                   'id' => $media->id,
+                   'url' => $media->url,
+                   'filename' => $media->original_name,
+                   'mime_type' => $media->mime_type,
+               ],
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error uploading media: ' . $e->getMessage(), [
+               'exception' => $e,
+               'request_data' => $request->all()
+           ]);
+           
+           return response()->json(['error' => 'Failed to upload media: ' . $e->getMessage()], 500);
+       }
+   }
 
-    /**
-     * Remove the specified article from storage.
-     */
-    public function destroy(string $uuid)
-    {
-        try {
-            $article = Article::where('uuid', $uuid)
-                ->where('user_id', Auth::id())
-                ->firstOrFail();
-                
-            // Delete article versions
-            $article->versions()->delete();
-            
-            // Detach media (but don't delete them)
-            $article->media()->detach();
-            
-            // Delete the article
-            $article->delete();
-            
-            return redirect()->route('articles.index')->with('success', 'Article deleted successfully');
-        } catch (\Exception $e) {
-            Log::error('Error deleting article: ' . $e->getMessage(), [
-                'exception' => $e,
-                'uuid' => $uuid,
-                'user_id' => Auth::id()
-            ]);
-            
-            return redirect()->route('articles.index')->with('error', 'Failed to delete article.');
-        }
-    }
+   /**
+    * Get media for an article.
+    */
+   public function getArticleMedia(string $uuid)
+   {
+       try {
+           $article = Article::where('uuid', $uuid)
+               ->where('user_id', Auth::id())
+               ->firstOrFail();
+               
+           $media = $article->media()->get()->map(function ($item) {
+               return [
+                   'id' => $item->id,
+                   'url' => $item->url,
+                   'filename' => $item->original_name,
+                   'mime_type' => $item->mime_type,
+               ];
+           });
+           
+           return response()->json([
+               'success' => true,
+               'media' => $media,
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error fetching article media: ' . $e->getMessage(), [
+               'exception' => $e,
+               'uuid' => $uuid
+           ]);
+           
+           return response()->json(['error' => 'Failed to fetch media'], 500);
+       }
+   }
+
+   /**
+    * Remove the specified article from storage.
+    */
+   public function destroy(string $uuid)
+   {
+       try {
+           $article = Article::where('uuid', $uuid)
+               ->where('user_id', Auth::id())
+               ->firstOrFail();
+               
+           // Delete article versions
+           $article->versions()->delete();
+           
+           // Detach media (but don't delete them)
+           $article->media()->detach();
+           
+           // Delete the article
+           $article->delete();
+           
+           return redirect()->route('articles.index')->with('success', 'Article deleted successfully');
+       } catch (\Exception $e) {
+           Log::error('Error deleting article: ' . $e->getMessage(), [
+               'exception' => $e,
+               'uuid' => $uuid,
+               'user_id' => Auth::id()
+           ]);
+           
+           return redirect()->route('articles.index')->with('error', 'Failed to delete article.');
+       }
+   }
 }
 ---END FILE CONTENTS---
 
@@ -548,156 +595,167 @@ use Illuminate\Support\Str;
 
 class Article extends Model
 {
-    use HasFactory;
+   use HasFactory;
 
-    /**
-     * The attributes that are mass assignable.
-     *
-     * @var array<int, string>
-     */
-    protected $fillable = [
-        'uuid',
-        'user_id',
-        'title',
-        'slug',
-        'content',
-        'status',
-        'published_at',
-        'seo_data',
-        'word_count',
-        'reading_time',
-    ];
+   /**
+    * The attributes that are mass assignable.
+    *
+    * @var array<int, string>
+    */
+   protected $fillable = [
+       'uuid',
+       'user_id',
+       'title',
+       'slug',
+       'content',
+       'status',
+       'published_at',
+       'scheduled_at',
+       'seo_data',
+       'word_count',
+       'reading_time',
+   ];
 
-    /**
-     * The attributes that should be cast.
-     *
-     * @var array<string, string>
-     */
-    protected $casts = [
-        'published_at' => 'datetime',
-        'seo_data' => 'array', // Changed from 'json' for better compatibility
-    ];
+   /**
+    * The attributes that should be cast.
+    *
+    * @var array<string, string>
+    */
+   protected $casts = [
+       'published_at' => 'datetime',
+       'scheduled_at' => 'datetime',
+       'seo_data' => 'array', // Changed from 'json' for better compatibility
+   ];
 
-    /**
-     * Boot the model.
-     */
-    protected static function boot()
-    {
-        parent::boot();
+   /**
+    * Boot the model.
+    */
+   protected static function boot()
+   {
+       parent::boot();
 
-        static::creating(function ($article) {
-            $article->uuid = $article->uuid ?? (string) Str::uuid();
-            
-            if (empty($article->slug) && !empty($article->title)) {
-                $article->slug = Str::slug($article->title);
-            }
-        });
-        
-        static::updating(function ($article) {
-            // Only update the slug if title changed and the slug hasn't been manually set
-            if ($article->isDirty('title') && !$article->isDirty('slug') && !empty($article->title)) {
-                $article->slug = Str::slug($article->title);
-            }
-        });
-    }
+       static::creating(function ($article) {
+           $article->uuid = $article->uuid ?? (string) Str::uuid();
+           
+           if (empty($article->slug) && !empty($article->title)) {
+               $article->slug = Str::slug($article->title);
+           }
+       });
+       
+       static::updating(function ($article) {
+           // Only update the slug if title changed and the slug hasn't been manually set
+           if ($article->isDirty('title') && !$article->isDirty('slug') && !empty($article->title)) {
+               $article->slug = Str::slug($article->title);
+           }
+       });
+   }
 
-    /**
-     * Get the user that owns the article.
-     */
-    public function author(): BelongsTo
-    {
-        return $this->belongsTo(User::class, 'user_id');
-    }
+   /**
+    * Get the user that owns the article.
+    */
+   public function author(): BelongsTo
+   {
+       return $this->belongsTo(User::class, 'user_id');
+   }
 
-    /**
-     * Get the article versions.
-     */
-    public function versions(): HasMany
-    {
-        return $this->hasMany(ArticleVersion::class);
-    }
+   /**
+    * Get the article versions.
+    */
+   public function versions(): HasMany
+   {
+       return $this->hasMany(ArticleVersion::class);
+   }
 
-    /**
-     * Get the media attached to the article.
-     */
-    public function media(): BelongsToMany
-    {
-        return $this->belongsToMany(Media::class, 'article_media')
-            ->withTimestamps();
-    }
+   /**
+    * Get the media attached to the article.
+    */
+   public function media(): BelongsToMany
+   {
+       return $this->belongsToMany(Media::class, 'article_media')
+           ->withTimestamps();
+   }
 
-    /**
-     * Create a version snapshot of the current content.
-     */
-    public function createVersionSnapshot(string $versionName = null): ?ArticleVersion
-    {
-        try {
-            return $this->versions()->create([
-                'content' => $this->content ?? '',
-                'version_name' => $versionName ?? 'Snapshot ' . ($this->versions()->count() + 1),
-            ]);
-        } catch (\Exception $e) {
-            \Log::error('Error creating version snapshot: ' . $e->getMessage(), [
-                'article_id' => $this->id,
-                'exception' => $e
-            ]);
-            return null;
-        }
-    }
+   /**
+    * Create a version snapshot of the current content.
+    */
+   public function createVersionSnapshot(string $versionName = null): ?ArticleVersion
+   {
+       try {
+           return $this->versions()->create([
+               'content' => $this->content ?? '',
+               'version_name' => $versionName ?? 'Snapshot ' . ($this->versions()->count() + 1),
+           ]);
+       } catch (\Exception $e) {
+           \Log::error('Error creating version snapshot: ' . $e->getMessage(), [
+               'article_id' => $this->id,
+               'exception' => $e
+           ]);
+           return null;
+       }
+   }
 
-    /**
-     * Calculate and update the word count and reading time.
-     */
-    public function updateWordStats(): self
-    {
-        try {
-            // If content is null, set default values
-            if (empty($this->content)) {
-                $this->word_count = 0;
-                $this->reading_time = 0;
-                $this->save();
-                return $this;
-            }
-            
-            // Safely strip tags and count words
-            $plainText = strip_tags($this->content ?? '');
-            $this->word_count = str_word_count($plainText);
-            
-            // Calculate reading time (average reading speed is about 200 words per minute)
-            // Minimum 1 minute reading time
-            $this->reading_time = max(1, ceil($this->word_count / 200));
-            
-            $this->save();
-            
-            return $this;
-        } catch (\Exception $e) {
-            \Log::error('Error updating word stats: ' . $e->getMessage(), [
-                'article_id' => $this->id,
-                'exception' => $e
-            ]);
-            
-            // Don't let this failure prevent saving
-            return $this;
-        }
-    }
+   /**
+    * Calculate and update the word count and reading time.
+    */
+   public function updateWordStats(): self
+   {
+       try {
+           // If content is null, set default values
+           if (empty($this->content)) {
+               $this->word_count = 0;
+               $this->reading_time = 0;
+               $this->save();
+               return $this;
+           }
+           
+           // Safely strip tags and count words
+           $plainText = strip_tags($this->content ?? '');
+           $this->word_count = str_word_count($plainText);
+           
+           // Calculate reading time (average reading speed is about 200 words per minute)
+           // Minimum 1 minute reading time
+           $this->reading_time = max(1, ceil($this->word_count / 200));
+           
+           $this->save();
+           
+           return $this;
+       } catch (\Exception $e) {
+           \Log::error('Error updating word stats: ' . $e->getMessage(), [
+               'article_id' => $this->id,
+               'exception' => $e
+           ]);
+           
+           // Don't let this failure prevent saving
+           return $this;
+       }
+   }
 
-    /**
-     * Scope a query to only include published articles.
-     */
-    public function scopePublished($query)
-    {
-        return $query->where('status', 'published')
-            ->whereNotNull('published_at')
-            ->where('published_at', '<=', now());
-    }
+   /**
+    * Scope a query to only include published articles.
+    */
+   public function scopePublished($query)
+   {
+       return $query->where('status', 'published')
+           ->whereNotNull('published_at')
+           ->where('published_at', '<=', now());
+   }
 
-    /**
-     * Scope a query to only include draft articles.
-     */
-    public function scopeDraft($query)
-    {
-        return $query->where('status', 'draft');
-    }
+   /**
+    * Scope a query to only include draft articles.
+    */
+   public function scopeDraft($query)
+   {
+       return $query->where('status', 'draft');
+   }
+   
+   /**
+    * Scope a query to only include scheduled articles.
+    */
+   public function scopeScheduled($query)
+   {
+       return $query->where('status', 'scheduled')
+           ->whereNotNull('scheduled_at');
+   }
 }
 ---END FILE CONTENTS---
 
@@ -2050,6 +2108,3352 @@ export function Breadcrumbs({ breadcrumbs }: { breadcrumbs: BreadcrumbItemType[]
 ---END FILE CONTENTS---
 
 
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/tabs.tsx
+---BEGIN FILE CONTENTS---
+import * as React from "react"
+import * as TabsPrimitive from "@radix-ui/react-tabs"
+
+import { cn } from "@/lib/utils"
+
+function Tabs({
+  className,
+  ...props
+}: React.ComponentProps<typeof TabsPrimitive.Root>) {
+  return (
+    <TabsPrimitive.Root
+      data-slot="tabs"
+      className={cn("flex flex-col gap-2", className)}
+      {...props}
+    />
+  )
+}
+
+function TabsList({
+  className,
+  ...props
+}: React.ComponentProps<typeof TabsPrimitive.List>) {
+  return (
+    <TabsPrimitive.List
+      data-slot="tabs-list"
+      className={cn(
+        "bg-muted text-muted-foreground inline-flex h-9 w-fit items-center justify-center rounded-lg p-[3px]",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function TabsTrigger({
+  className,
+  ...props
+}: React.ComponentProps<typeof TabsPrimitive.Trigger>) {
+  return (
+    <TabsPrimitive.Trigger
+      data-slot="tabs-trigger"
+      className={cn(
+        "data-[state=active]:bg-background dark:data-[state=active]:text-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:outline-ring dark:data-[state=active]:border-input dark:data-[state=active]:bg-input/30 text-foreground dark:text-muted-foreground inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-md border border-transparent px-2 py-1 text-sm font-medium whitespace-nowrap transition-[color,box-shadow] focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 data-[state=active]:shadow-sm [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function TabsContent({
+  className,
+  ...props
+}: React.ComponentProps<typeof TabsPrimitive.Content>) {
+  return (
+    <TabsPrimitive.Content
+      data-slot="tabs-content"
+      className={cn("flex-1 outline-none", className)}
+      {...props}
+    />
+  )
+}
+
+export { Tabs, TabsList, TabsTrigger, TabsContent }
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/use-toast.tsx
+---BEGIN FILE CONTENTS---
+import * as React from "react"
+
+import type { ToastProps } from "@/components/ui/toast"
+
+const TOAST_LIMIT = 1
+const TOAST_REMOVE_DELAY = 5000 // 5 seconds
+
+type ToastActionElement = React.ReactElement
+
+export type ToasterToast = {
+  id: string
+  title?: React.ReactNode
+  description?: React.ReactNode
+  action?: ToastActionElement
+  open: boolean
+  onOpenChange: (open: boolean) => void
+} & ToastProps
+
+const actionTypes = {
+  ADD_TOAST: "ADD_TOAST",
+  UPDATE_TOAST: "UPDATE_TOAST",
+  DISMISS_TOAST: "DISMISS_TOAST",
+  REMOVE_TOAST: "REMOVE_TOAST",
+} as const
+
+let count = 0
+
+function genId() {
+  count = (count + 1) % Number.MAX_SAFE_INTEGER
+  return count.toString()
+}
+
+type ActionType = typeof actionTypes
+
+type Action =
+  | {
+      type: ActionType["ADD_TOAST"]
+      toast: ToasterToast
+    }
+  | {
+      type: ActionType["UPDATE_TOAST"]
+      toast: Partial<ToasterToast>
+    }
+  | {
+      type: ActionType["DISMISS_TOAST"]
+      toastId?: ToasterToast["id"]
+    }
+  | {
+      type: ActionType["REMOVE_TOAST"]
+      toastId?: ToasterToast["id"]
+    }
+
+interface State {
+  toasts: ToasterToast[]
+}
+
+const toastTimeouts = new Map<string, ReturnType<typeof setTimeout>>()
+
+const addToRemoveQueue = (toastId: string) => {
+  if (toastTimeouts.has(toastId)) {
+    return
+  }
+
+  const timeout = setTimeout(() => {
+    toastTimeouts.delete(toastId)
+    dispatch({
+      type: "REMOVE_TOAST",
+      toastId: toastId,
+    })
+  }, TOAST_REMOVE_DELAY)
+
+  toastTimeouts.set(toastId, timeout)
+}
+
+export const reducer = (state: State, action: Action): State => {
+  switch (action.type) {
+    case "ADD_TOAST":
+      return {
+        ...state,
+        toasts: [action.toast, ...state.toasts].slice(0, TOAST_LIMIT),
+      }
+
+    case "UPDATE_TOAST":
+      return {
+        ...state,
+        toasts: state.toasts.map((t) =>
+          t.id === action.toast.id ? { ...t, ...action.toast } : t
+        ),
+      }
+
+    case "DISMISS_TOAST": {
+      const { toastId } = action
+
+      if (toastId) {
+        addToRemoveQueue(toastId)
+      } else {
+        state.toasts.forEach((toast) => {
+          addToRemoveQueue(toast.id)
+        })
+      }
+
+      return {
+        ...state,
+        toasts: state.toasts.map((t) =>
+          t.id === toastId || toastId === undefined
+            ? {
+                ...t,
+                open: false,
+              }
+            : t
+        ),
+      }
+    }
+    case "REMOVE_TOAST":
+      if (action.toastId === undefined) {
+        return {
+          ...state,
+          toasts: [],
+        }
+      }
+      return {
+        ...state,
+        toasts: state.toasts.filter((t) => t.id !== action.toastId),
+      }
+  }
+}
+
+const listeners: Array<(state: State) => void> = []
+
+let memoryState: State = { toasts: [] }
+
+function dispatch(action: Action) {
+  memoryState = reducer(memoryState, action)
+  listeners.forEach((listener) => {
+    listener(memoryState)
+  })
+}
+
+type ToastOptions = Omit<ToasterToast, "id" | "open" | "onOpenChange">
+
+function toast(options: ToastOptions) {
+  const id = genId()
+
+  const update = (props: ToastOptions) =>
+    dispatch({
+      type: "UPDATE_TOAST",
+      toast: { ...props, id },
+    })
+  const dismiss = () => dispatch({ type: "DISMISS_TOAST", toastId: id })
+
+  dispatch({
+    type: "ADD_TOAST",
+    toast: {
+      ...options,
+      id,
+      open: true,
+      onOpenChange: (open: boolean) => {
+        if (!open) dismiss()
+      },
+    },
+  })
+
+  return {
+    id: id,
+    dismiss,
+    update,
+  }
+}
+
+function useToast() {
+  const [state, setState] = React.useState<State>(memoryState)
+
+  React.useEffect(() => {
+    listeners.push(setState)
+    return () => {
+      const index = listeners.indexOf(setState)
+      if (index > -1) {
+        listeners.splice(index, 1)
+      }
+    }
+  }, [state])
+
+  return {
+    ...state,
+    toast,
+    dismiss: (toastId?: string) => dispatch({ type: "DISMISS_TOAST", toastId }),
+  }
+}
+
+export { useToast, toast }
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/skeleton.tsx
+---BEGIN FILE CONTENTS---
+import { cn } from "@/lib/utils"
+
+function Skeleton({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="skeleton"
+      className={cn("bg-primary/10 animate-pulse rounded-md", className)}
+      {...props}
+    />
+  )
+}
+
+export { Skeleton }
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/collapsible.tsx
+---BEGIN FILE CONTENTS---
+import * as CollapsiblePrimitive from "@radix-ui/react-collapsible"
+
+function Collapsible({
+  ...props
+}: React.ComponentProps<typeof CollapsiblePrimitive.Root>) {
+  return <CollapsiblePrimitive.Root data-slot="collapsible" {...props} />
+}
+
+function CollapsibleTrigger({
+  ...props
+}: React.ComponentProps<typeof CollapsiblePrimitive.CollapsibleTrigger>) {
+  return (
+    <CollapsiblePrimitive.CollapsibleTrigger
+      data-slot="collapsible-trigger"
+      {...props}
+    />
+  )
+}
+
+function CollapsibleContent({
+  ...props
+}: React.ComponentProps<typeof CollapsiblePrimitive.CollapsibleContent>) {
+  return (
+    <CollapsiblePrimitive.CollapsibleContent
+      data-slot="collapsible-content"
+      {...props}
+    />
+  )
+}
+
+export { Collapsible, CollapsibleTrigger, CollapsibleContent }
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/toaster.tsx
+---BEGIN FILE CONTENTS---
+import {
+  Toast,
+  ToastClose,
+  ToastDescription,
+  ToastProvider,
+  ToastTitle,
+  ToastViewport,
+} from "@/components/ui/toast"
+import { useToast } from "@/components/ui/use-toast"
+
+export function Toaster() {
+  const { toasts } = useToast()
+
+  return (
+    <ToastProvider>
+      {toasts.map(function ({ id, title, description, action, ...props }) {
+        return (
+          <Toast key={id} {...props}>
+            <div className="grid gap-1">
+              {title && <ToastTitle>{title}</ToastTitle>}
+              {description && (
+                <ToastDescription>{description}</ToastDescription>
+              )}
+            </div>
+            {action}
+            <ToastClose />
+          </Toast>
+        )
+      })}
+      <ToastViewport />
+    </ToastProvider>
+  )
+}
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/icon.tsx
+---BEGIN FILE CONTENTS---
+import { LucideIcon } from 'lucide-react';
+
+interface IconProps {
+    iconNode?: LucideIcon | null;
+    className?: string;
+}
+
+export function Icon({ iconNode: IconComponent, className }: IconProps) {
+    if (!IconComponent) {
+        return null;
+    }
+
+    return <IconComponent className={className} />;
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/placeholder-pattern.tsx
+---BEGIN FILE CONTENTS---
+import { useId } from 'react';
+
+interface PlaceholderPatternProps {
+    className?: string;
+}
+
+export function PlaceholderPattern({ className }: PlaceholderPatternProps) {
+    const patternId = useId();
+
+    return (
+        <svg className={className} fill="none">
+            <defs>
+                <pattern id={patternId} x="0" y="0" width="10" height="10" patternUnits="userSpaceOnUse">
+                    <path d="M-3 13 15-5M-5 5l18-18M-1 21 17 3"></path>
+                </pattern>
+            </defs>
+            <rect stroke="none" fill={`url(#${patternId})`} width="100%" height="100%"></rect>
+        </svg>
+    );
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/alert.tsx
+---BEGIN FILE CONTENTS---
+import * as React from "react"
+import { cva, type VariantProps } from "class-variance-authority"
+
+import { cn } from "@/lib/utils"
+
+const alertVariants = cva(
+  "relative w-full rounded-lg border px-4 py-3 text-sm grid has-[>svg]:grid-cols-[calc(var(--spacing)*4)_1fr] grid-cols-[0_1fr] has-[>svg]:gap-x-3 gap-y-0.5 items-start [&>svg]:size-4 [&>svg]:translate-y-0.5 [&>svg]:text-current",
+  {
+    variants: {
+      variant: {
+        default: "bg-background text-foreground",
+        destructive:
+          "text-destructive-foreground [&>svg]:text-current *:data-[slot=alert-description]:text-destructive-foreground/80",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+    },
+  }
+)
+
+function Alert({
+  className,
+  variant,
+  ...props
+}: React.ComponentProps<"div"> & VariantProps<typeof alertVariants>) {
+  return (
+    <div
+      data-slot="alert"
+      role="alert"
+      className={cn(alertVariants({ variant }), className)}
+      {...props}
+    />
+  )
+}
+
+function AlertTitle({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="alert-title"
+      className={cn(
+        "col-start-2 line-clamp-1 min-h-4 font-medium tracking-tight",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function AlertDescription({
+  className,
+  ...props
+}: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="alert-description"
+      className={cn(
+        "text-muted-foreground col-start-2 grid justify-items-start gap-1 text-sm [&_p]:leading-relaxed",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+export { Alert, AlertTitle, AlertDescription }
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/toggle.tsx
+---BEGIN FILE CONTENTS---
+import * as React from "react"
+import * as TogglePrimitive from "@radix-ui/react-toggle"
+import { cva, type VariantProps } from "class-variance-authority"
+
+import { cn } from "@/lib/utils"
+
+const toggleVariants = cva(
+  "inline-flex items-center justify-center gap-2 rounded-md text-sm font-medium hover:bg-muted hover:text-muted-foreground disabled:pointer-events-none disabled:opacity-50 data-[state=on]:bg-accent data-[state=on]:text-accent-foreground [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 [&_svg]:shrink-0 focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] outline-none transition-[color,box-shadow] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive",
+  {
+    variants: {
+      variant: {
+        default: "bg-transparent",
+        outline:
+          "border border-input bg-transparent shadow-xs hover:bg-accent hover:text-accent-foreground",
+      },
+      size: {
+        default: "h-9 px-2 min-w-9",
+        sm: "h-8 px-1.5 min-w-8",
+        lg: "h-10 px-2.5 min-w-10",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+      size: "default",
+    },
+  }
+)
+
+function Toggle({
+  className,
+  variant,
+  size,
+  ...props
+}: React.ComponentProps<typeof TogglePrimitive.Root> &
+  VariantProps<typeof toggleVariants>) {
+  return (
+    <TogglePrimitive.Root
+      data-slot="toggle"
+      className={cn(toggleVariants({ variant, size, className }))}
+      {...props}
+    />
+  )
+}
+
+export { Toggle, toggleVariants }
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/checkbox.tsx
+---BEGIN FILE CONTENTS---
+import * as React from "react"
+import * as CheckboxPrimitive from "@radix-ui/react-checkbox"
+import { CheckIcon } from "lucide-react"
+
+import { cn } from "@/lib/utils"
+
+function Checkbox({
+  className,
+  ...props
+}: React.ComponentProps<typeof CheckboxPrimitive.Root>) {
+  return (
+    <CheckboxPrimitive.Root
+      data-slot="checkbox"
+      className={cn(
+        "peer border-input data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground data-[state=checked]:border-primary focus-visible:border-ring focus-visible:ring-ring/50 aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive size-4 shrink-0 rounded-[4px] border shadow-xs transition-shadow outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50",
+        className
+      )}
+      {...props}
+    >
+      <CheckboxPrimitive.Indicator
+        data-slot="checkbox-indicator"
+        className="flex items-center justify-center text-current transition-none"
+      >
+        <CheckIcon className="size-3.5" />
+      </CheckboxPrimitive.Indicator>
+    </CheckboxPrimitive.Root>
+  )
+}
+
+export { Checkbox }
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/dialog.tsx
+---BEGIN FILE CONTENTS---
+import * as React from "react"
+import * as DialogPrimitive from "@radix-ui/react-dialog"
+import { XIcon } from "lucide-react"
+
+import { cn } from "@/lib/utils"
+
+function Dialog({
+  ...props
+}: React.ComponentProps<typeof DialogPrimitive.Root>) {
+  return <DialogPrimitive.Root data-slot="dialog" {...props} />
+}
+
+function DialogTrigger({
+  ...props
+}: React.ComponentProps<typeof DialogPrimitive.Trigger>) {
+  return <DialogPrimitive.Trigger data-slot="dialog-trigger" {...props} />
+}
+
+function DialogPortal({
+  ...props
+}: React.ComponentProps<typeof DialogPrimitive.Portal>) {
+  return <DialogPrimitive.Portal data-slot="dialog-portal" {...props} />
+}
+
+function DialogClose({
+  ...props
+}: React.ComponentProps<typeof DialogPrimitive.Close>) {
+  return <DialogPrimitive.Close data-slot="dialog-close" {...props} />
+}
+
+function DialogOverlay({
+  className,
+  ...props
+}: React.ComponentProps<typeof DialogPrimitive.Overlay>) {
+  return (
+    <DialogPrimitive.Overlay
+      data-slot="dialog-overlay"
+      className={cn(
+        "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed inset-0 z-50 bg-black/80",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function DialogContent({
+  className,
+  children,
+  ...props
+}: React.ComponentProps<typeof DialogPrimitive.Content>) {
+  return (
+    <DialogPortal data-slot="dialog-portal">
+      <DialogOverlay />
+      <DialogPrimitive.Content
+        data-slot="dialog-content"
+        className={cn(
+          "bg-background data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border p-6 shadow-lg duration-200 sm:max-w-lg",
+          className
+        )}
+        {...props}
+      >
+        {children}
+        <DialogPrimitive.Close className="ring-offset-background focus:ring-ring data-[state=open]:bg-accent data-[state=open]:text-muted-foreground absolute top-4 right-4 rounded-xs opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4">
+          <XIcon />
+          <span className="sr-only">Close</span>
+        </DialogPrimitive.Close>
+      </DialogPrimitive.Content>
+    </DialogPortal>
+  )
+}
+
+function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="dialog-header"
+      className={cn("flex flex-col gap-2 text-center sm:text-left", className)}
+      {...props}
+    />
+  )
+}
+
+function DialogFooter({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="dialog-footer"
+      className={cn(
+        "flex flex-col-reverse gap-2 sm:flex-row sm:justify-end",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function DialogTitle({
+  className,
+  ...props
+}: React.ComponentProps<typeof DialogPrimitive.Title>) {
+  return (
+    <DialogPrimitive.Title
+      data-slot="dialog-title"
+      className={cn("text-lg leading-none font-semibold", className)}
+      {...props}
+    />
+  )
+}
+
+function DialogDescription({
+  className,
+  ...props
+}: React.ComponentProps<typeof DialogPrimitive.Description>) {
+  return (
+    <DialogPrimitive.Description
+      data-slot="dialog-description"
+      className={cn("text-muted-foreground text-sm", className)}
+      {...props}
+    />
+  )
+}
+
+export {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogOverlay,
+  DialogPortal,
+  DialogTitle,
+  DialogTrigger,
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/radio-group.tsx
+---BEGIN FILE CONTENTS---
+import * as React from "react"
+import * as RadioGroupPrimitive from "@radix-ui/react-radio-group"
+import { CircleIcon } from "lucide-react"
+
+import { cn } from "@/lib/utils"
+
+function RadioGroup({
+  className,
+  ...props
+}: React.ComponentProps<typeof RadioGroupPrimitive.Root>) {
+  return (
+    <RadioGroupPrimitive.Root
+      data-slot="radio-group"
+      className={cn("grid gap-3", className)}
+      {...props}
+    />
+  )
+}
+
+function RadioGroupItem({
+  className,
+  ...props
+}: React.ComponentProps<typeof RadioGroupPrimitive.Item>) {
+  return (
+    <RadioGroupPrimitive.Item
+      data-slot="radio-group-item"
+      className={cn(
+        "border-input text-primary focus-visible:border-ring focus-visible:ring-ring/50 aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive dark:bg-input/30 aspect-square size-4 shrink-0 rounded-full border shadow-xs transition-[color,box-shadow] outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50",
+        className
+      )}
+      {...props}
+    >
+      <RadioGroupPrimitive.Indicator
+        data-slot="radio-group-indicator"
+        className="relative flex items-center justify-center"
+      >
+        <CircleIcon className="fill-primary absolute top-1/2 left-1/2 size-2 -translate-x-1/2 -translate-y-1/2" />
+      </RadioGroupPrimitive.Indicator>
+    </RadioGroupPrimitive.Item>
+  )
+}
+
+export { RadioGroup, RadioGroupItem }
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/toast.tsx
+---BEGIN FILE CONTENTS---
+import * as React from "react"
+import * as ToastPrimitives from "@radix-ui/react-toast"
+import { cva, type VariantProps } from "class-variance-authority"
+import { X } from "lucide-react"
+
+import { cn } from "@/lib/utils"
+
+const ToastProvider = ToastPrimitives.Provider
+
+const ToastViewport = React.forwardRef<
+  React.ElementRef<typeof ToastPrimitives.Viewport>,
+  React.ComponentPropsWithoutRef<typeof ToastPrimitives.Viewport>
+>(({ className, ...props }, ref) => (
+  <ToastPrimitives.Viewport
+    ref={ref}
+    className={cn(
+      "fixed top-0 z-[100] flex max-h-screen w-full flex-col-reverse p-4 sm:bottom-0 sm:right-0 sm:top-auto sm:flex-col md:max-w-[420px]",
+      className
+    )}
+    {...props}
+  />
+))
+ToastViewport.displayName = ToastPrimitives.Viewport.displayName
+
+const toastVariants = cva(
+  "group pointer-events-auto relative flex w-full items-center justify-between space-x-4 overflow-hidden rounded-md border p-6 pr-8 shadow-lg transition-all data-[swipe=cancel]:translate-x-0 data-[swipe=end]:translate-x-[var(--radix-toast-swipe-end-x)] data-[swipe=move]:translate-x-[var(--radix-toast-swipe-move-x)] data-[swipe=move]:transition-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[swipe=end]:animate-out data-[state=closed]:fade-out-80 data-[state=closed]:slide-out-to-right-full data-[state=open]:slide-in-from-top-full data-[state=open]:sm:slide-in-from-bottom-full",
+  {
+    variants: {
+      variant: {
+        default: "border bg-background text-foreground",
+        destructive:
+          "destructive group border-destructive bg-destructive text-destructive-foreground",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+    },
+  }
+)
+
+interface ToastProps
+  extends React.ComponentPropsWithoutRef<typeof ToastPrimitives.Root>,
+    VariantProps<typeof toastVariants> {}
+
+const Toast = React.forwardRef<
+  React.ElementRef<typeof ToastPrimitives.Root>,
+  ToastProps
+>(({ className, variant, ...props }, ref) => {
+  return (
+    <ToastPrimitives.Root
+      ref={ref}
+      className={cn(toastVariants({ variant }), className)}
+      {...props}
+    />
+  )
+})
+Toast.displayName = ToastPrimitives.Root.displayName
+
+const ToastAction = React.forwardRef<
+  React.ElementRef<typeof ToastPrimitives.Action>,
+  React.ComponentPropsWithoutRef<typeof ToastPrimitives.Action>
+>(({ className, ...props }, ref) => (
+  <ToastPrimitives.Action
+    ref={ref}
+    className={cn(
+      "inline-flex h-8 shrink-0 items-center justify-center rounded-md border bg-transparent px-3 text-sm font-medium ring-offset-background transition-colors hover:bg-secondary focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 group-[.destructive]:border-destructive/30 group-[.destructive]:hover:border-destructive/30 group-[.destructive]:hover:bg-destructive group-[.destructive]:hover:text-destructive-foreground group-[.destructive]:focus:ring-destructive",
+      className
+    )}
+    {...props}
+  />
+))
+ToastAction.displayName = ToastPrimitives.Action.displayName
+
+const ToastClose = React.forwardRef<
+  React.ElementRef<typeof ToastPrimitives.Close>,
+  React.ComponentPropsWithoutRef<typeof ToastPrimitives.Close>
+>(({ className, ...props }, ref) => (
+  <ToastPrimitives.Close
+    ref={ref}
+    className={cn(
+      "absolute right-2 top-2 rounded-md p-1 text-foreground/50 opacity-0 transition-opacity hover:text-foreground focus:opacity-100 focus:outline-none focus:ring-2 group-hover:opacity-100 group-[.destructive]:text-red-300 group-[.destructive]:hover:text-red-50 group-[.destructive]:focus:ring-red-400 group-[.destructive]:focus:ring-offset-red-600",
+      className
+    )}
+    toast-close=""
+    {...props}
+  >
+    <X className="h-4 w-4" />
+  </ToastPrimitives.Close>
+))
+ToastClose.displayName = ToastPrimitives.Close.displayName
+
+const ToastTitle = React.forwardRef<
+  React.ElementRef<typeof ToastPrimitives.Title>,
+  React.ComponentPropsWithoutRef<typeof ToastPrimitives.Title>
+>(({ className, ...props }, ref) => (
+  <ToastPrimitives.Title
+    ref={ref}
+    className={cn("text-sm font-semibold", className)}
+    {...props}
+  />
+))
+ToastTitle.displayName = ToastPrimitives.Title.displayName
+
+const ToastDescription = React.forwardRef<
+  React.ElementRef<typeof ToastPrimitives.Description>,
+  React.ComponentPropsWithoutRef<typeof ToastPrimitives.Description>
+>(({ className, ...props }, ref) => (
+  <ToastPrimitives.Description
+    ref={ref}
+    className={cn("text-sm opacity-90", className)}
+    {...props}
+  />
+))
+ToastDescription.displayName = ToastPrimitives.Description.displayName
+
+export type { ToastProps }
+
+export {
+  ToastProvider,
+  ToastViewport,
+  Toast,
+  ToastTitle,
+  ToastDescription,
+  ToastClose,
+  ToastAction,
+}
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/avatar.tsx
+---BEGIN FILE CONTENTS---
+import * as React from "react"
+import * as AvatarPrimitive from "@radix-ui/react-avatar"
+
+import { cn } from "@/lib/utils"
+
+function Avatar({
+  className,
+  ...props
+}: React.ComponentProps<typeof AvatarPrimitive.Root>) {
+  return (
+    <AvatarPrimitive.Root
+      data-slot="avatar"
+      className={cn(
+        "relative flex size-8 shrink-0 overflow-hidden rounded-full",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function AvatarImage({
+  className,
+  ...props
+}: React.ComponentProps<typeof AvatarPrimitive.Image>) {
+  return (
+    <AvatarPrimitive.Image
+      data-slot="avatar-image"
+      className={cn("aspect-square size-full", className)}
+      {...props}
+    />
+  )
+}
+
+function AvatarFallback({
+  className,
+  ...props
+}: React.ComponentProps<typeof AvatarPrimitive.Fallback>) {
+  return (
+    <AvatarPrimitive.Fallback
+      data-slot="avatar-fallback"
+      className={cn(
+        "bg-muted flex size-full items-center justify-center rounded-full",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+export { Avatar, AvatarImage, AvatarFallback }
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/sidebar.tsx
+---BEGIN FILE CONTENTS---
+import * as React from "react"
+import { Slot } from "@radix-ui/react-slot"
+import { VariantProps, cva } from "class-variance-authority"
+import { PanelLeftIcon } from "lucide-react"
+
+import { useIsMobile } from "@/hooks/use-mobile"
+import { cn } from "@/lib/utils"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Separator } from "@/components/ui/separator"
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet"
+import { Skeleton } from "@/components/ui/skeleton"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
+
+const SIDEBAR_COOKIE_NAME = "sidebar_state"
+const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
+const SIDEBAR_WIDTH = "16rem"
+const SIDEBAR_WIDTH_MOBILE = "18rem"
+const SIDEBAR_WIDTH_ICON = "3rem"
+const SIDEBAR_KEYBOARD_SHORTCUT = "b"
+
+type SidebarContext = {
+  state: "expanded" | "collapsed"
+  open: boolean
+  setOpen: (open: boolean) => void
+  openMobile: boolean
+  setOpenMobile: (open: boolean) => void
+  isMobile: boolean
+  toggleSidebar: () => void
+}
+
+const SidebarContext = React.createContext<SidebarContext | null>(null)
+
+function useSidebar() {
+  const context = React.useContext(SidebarContext)
+  if (!context) {
+    throw new Error("useSidebar must be used within a SidebarProvider.")
+  }
+
+  return context
+}
+
+function SidebarProvider({
+  defaultOpen = true,
+  open: openProp,
+  onOpenChange: setOpenProp,
+  className,
+  style,
+  children,
+  ...props
+}: React.ComponentProps<"div"> & {
+  defaultOpen?: boolean
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
+}) {
+  const isMobile = useIsMobile()
+  const [openMobile, setOpenMobile] = React.useState(false)
+
+  // This is the internal state of the sidebar.
+  // We use openProp and setOpenProp for control from outside the component.
+  const [_open, _setOpen] = React.useState(defaultOpen)
+  const open = openProp ?? _open
+  const setOpen = React.useCallback(
+    (value: boolean | ((value: boolean) => boolean)) => {
+      const openState = typeof value === "function" ? value(open) : value
+      if (setOpenProp) {
+        setOpenProp(openState)
+      } else {
+        _setOpen(openState)
+      }
+
+      // This sets the cookie to keep the sidebar state.
+      document.cookie = `${SIDEBAR_COOKIE_NAME}=${openState}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`
+    },
+    [setOpenProp, open]
+  )
+
+  // Helper to toggle the sidebar.
+  const toggleSidebar = React.useCallback(() => {
+    return isMobile ? setOpenMobile((open) => !open) : setOpen((open) => !open)
+  }, [isMobile, setOpen, setOpenMobile])
+
+  // Adds a keyboard shortcut to toggle the sidebar.
+  React.useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.key === SIDEBAR_KEYBOARD_SHORTCUT &&
+        (event.metaKey || event.ctrlKey)
+      ) {
+        event.preventDefault()
+        toggleSidebar()
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown)
+    return () => window.removeEventListener("keydown", handleKeyDown)
+  }, [toggleSidebar])
+
+  // We add a state so that we can do data-state="expanded" or "collapsed".
+  // This makes it easier to style the sidebar with Tailwind classes.
+  const state = open ? "expanded" : "collapsed"
+
+  const contextValue = React.useMemo<SidebarContext>(
+    () => ({
+      state,
+      open,
+      setOpen,
+      isMobile,
+      openMobile,
+      setOpenMobile,
+      toggleSidebar,
+    }),
+    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar]
+  )
+
+  return (
+    <SidebarContext.Provider value={contextValue}>
+      <TooltipProvider delayDuration={0}>
+        <div
+          data-slot="sidebar-wrapper"
+          style={
+            {
+              "--sidebar-width": SIDEBAR_WIDTH,
+              "--sidebar-width-icon": SIDEBAR_WIDTH_ICON,
+              ...style,
+            } as React.CSSProperties
+          }
+          className={cn(
+            "group/sidebar-wrapper has-data-[variant=inset]:bg-sidebar flex min-h-svh w-full",
+            className
+          )}
+          {...props}
+        >
+          {children}
+        </div>
+      </TooltipProvider>
+    </SidebarContext.Provider>
+  )
+}
+
+function Sidebar({
+  side = "left",
+  variant = "sidebar",
+  collapsible = "offcanvas",
+  className,
+  children,
+  ...props
+}: React.ComponentProps<"div"> & {
+  side?: "left" | "right"
+  variant?: "sidebar" | "floating" | "inset"
+  collapsible?: "offcanvas" | "icon" | "none"
+}) {
+  const { isMobile, state, openMobile, setOpenMobile } = useSidebar()
+
+  if (collapsible === "none") {
+    return (
+      <div
+        data-slot="sidebar"
+        className={cn(
+          "bg-sidebar text-sidebar-foreground flex h-full w-(--sidebar-width) flex-col",
+          className
+        )}
+        {...props}
+      >
+        {children}
+      </div>
+    )
+  }
+
+  if (isMobile) {
+    return (
+      <Sheet open={openMobile} onOpenChange={setOpenMobile} {...props}>
+        <SheetHeader className="sr-only">
+          <SheetTitle>Sidebar</SheetTitle>
+          <SheetDescription>Displays the mobile sidebar.</SheetDescription>
+        </SheetHeader>
+        <SheetContent
+          data-sidebar="sidebar"
+          data-slot="sidebar"
+          data-mobile="true"
+          className="bg-sidebar text-sidebar-foreground w-(--sidebar-width) p-0 [&>button]:hidden"
+          style={
+            {
+              "--sidebar-width": SIDEBAR_WIDTH_MOBILE,
+            } as React.CSSProperties
+          }
+          side={side}
+        >
+          <div className="flex h-full w-full flex-col">{children}</div>
+        </SheetContent>
+      </Sheet>
+    )
+  }
+
+  return (
+    <div
+      className="group peer text-sidebar-foreground hidden md:block"
+      data-state={state}
+      data-collapsible={state === "collapsed" ? collapsible : ""}
+      data-variant={variant}
+      data-side={side}
+      data-slot="sidebar"
+    >
+      {/* This is what handles the sidebar gap on desktop */}
+      <div
+        className={cn(
+          "relative h-svh w-(--sidebar-width) bg-transparent transition-[width] duration-200 ease-linear",
+          "group-data-[collapsible=offcanvas]:w-0",
+          "group-data-[side=right]:rotate-180",
+          variant === "floating" || variant === "inset"
+            ? "group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4)))]"
+            : "group-data-[collapsible=icon]:w-(--sidebar-width-icon)"
+        )}
+      />
+      <div
+        className={cn(
+          "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) transition-[left,right,width] duration-200 ease-linear md:flex",
+          side === "left"
+            ? "left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)]"
+            : "right-0 group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)]",
+          // Adjust the padding for floating and inset variants.
+          variant === "floating" || variant === "inset"
+            ? "p-2 group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4))+2px)]"
+            : "group-data-[collapsible=icon]:w-(--sidebar-width-icon) group-data-[side=left]:border-r group-data-[side=right]:border-l",
+          className
+        )}
+        {...props}
+      >
+        <div
+          data-sidebar="sidebar"
+          className="bg-sidebar group-data-[variant=floating]:border-sidebar-border flex h-full w-full flex-col group-data-[variant=floating]:rounded-lg group-data-[variant=floating]:border group-data-[variant=floating]:shadow-sm"
+        >
+          {children}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function SidebarTrigger({
+  className,
+  onClick,
+  ...props
+}: React.ComponentProps<typeof Button>) {
+  const { toggleSidebar } = useSidebar()
+
+  return (
+    <Button
+      data-sidebar="trigger"
+      data-slot="sidebar-trigger"
+      variant="ghost"
+      size="icon"
+      className={cn("h-7 w-7", className)}
+      onClick={(event) => {
+        onClick?.(event)
+        toggleSidebar()
+      }}
+      {...props}
+    >
+      <PanelLeftIcon />
+      <span className="sr-only">Toggle Sidebar</span>
+    </Button>
+  )
+}
+
+function SidebarRail({ className, ...props }: React.ComponentProps<"button">) {
+  const { toggleSidebar } = useSidebar()
+
+  return (
+    <button
+      data-sidebar="rail"
+      data-slot="sidebar-rail"
+      aria-label="Toggle Sidebar"
+      tabIndex={-1}
+      onClick={toggleSidebar}
+      title="Toggle Sidebar"
+      className={cn(
+        "hover:after:bg-sidebar-border absolute inset-y-0 z-20 hidden w-4 -translate-x-1/2 transition-all ease-linear group-data-[side=left]:-right-4 group-data-[side=right]:left-0 after:absolute after:inset-y-0 after:left-1/2 after:w-[2px] sm:flex",
+        "in-data-[side=left]:cursor-w-resize in-data-[side=right]:cursor-e-resize",
+        "[[data-side=left][data-state=collapsed]_&]:cursor-e-resize [[data-side=right][data-state=collapsed]_&]:cursor-w-resize",
+        "hover:group-data-[collapsible=offcanvas]:bg-sidebar group-data-[collapsible=offcanvas]:translate-x-0 group-data-[collapsible=offcanvas]:after:left-full",
+        "[[data-side=left][data-collapsible=offcanvas]_&]:-right-2",
+        "[[data-side=right][data-collapsible=offcanvas]_&]:-left-2",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function SidebarInset({ className, ...props }: React.ComponentProps<"main">) {
+  return (
+    <main
+      data-slot="sidebar-inset"
+      className={cn(
+        "bg-background relative flex max-w-full min-h-svh flex-1 flex-col",
+        "peer-data-[variant=inset]:min-h-[calc(100svh-(--spacing(4)))] md:peer-data-[variant=inset]:m-2 md:peer-data-[variant=inset]:ml-0 md:peer-data-[variant=inset]:rounded-xl md:peer-data-[variant=inset]:shadow-sm md:peer-data-[variant=inset]:peer-data-[state=collapsed]:ml-0",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function SidebarInput({
+  className,
+  ...props
+}: React.ComponentProps<typeof Input>) {
+  return (
+    <Input
+      data-slot="sidebar-input"
+      data-sidebar="input"
+      className={cn("bg-background h-8 w-full shadow-none", className)}
+      {...props}
+    />
+  )
+}
+
+function SidebarHeader({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="sidebar-header"
+      data-sidebar="header"
+      className={cn("flex flex-col gap-2 p-2", className)}
+      {...props}
+    />
+  )
+}
+
+function SidebarFooter({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="sidebar-footer"
+      data-sidebar="footer"
+      className={cn("flex flex-col gap-2 p-2", className)}
+      {...props}
+    />
+  )
+}
+
+function SidebarSeparator({
+  className,
+  ...props
+}: React.ComponentProps<typeof Separator>) {
+  return (
+    <Separator
+      data-slot="sidebar-separator"
+      data-sidebar="separator"
+      className={cn("bg-sidebar-border mx-2 w-auto", className)}
+      {...props}
+    />
+  )
+}
+
+function SidebarContent({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="sidebar-content"
+      data-sidebar="content"
+      className={cn(
+        "flex min-h-0 flex-1 flex-col gap-2 overflow-auto group-data-[collapsible=icon]:overflow-hidden",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function SidebarGroup({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="sidebar-group"
+      data-sidebar="group"
+      className={cn("relative flex w-full min-w-0 flex-col p-2", className)}
+      {...props}
+    />
+  )
+}
+
+function SidebarGroupLabel({
+  className,
+  asChild = false,
+  ...props
+}: React.ComponentProps<"div"> & { asChild?: boolean }) {
+  const Comp = asChild ? Slot : "div"
+
+  return (
+    <Comp
+      data-slot="sidebar-group-label"
+      data-sidebar="group-label"
+      className={cn(
+        "text-sidebar-foreground/70 ring-sidebar-ring flex h-8 shrink-0 items-center rounded-md px-2 text-xs font-medium outline-hidden transition-[margin,opacity] duration-200 ease-linear focus-visible:ring-2 [&>svg]:size-4 [&>svg]:shrink-0",
+        "group-data-[collapsible=icon]:-mt-8 group-data-[collapsible=icon]:opacity-0",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function SidebarGroupAction({
+  className,
+  asChild = false,
+  ...props
+}: React.ComponentProps<"button"> & { asChild?: boolean }) {
+  const Comp = asChild ? Slot : "button"
+
+  return (
+    <Comp
+      data-slot="sidebar-group-action"
+      data-sidebar="group-action"
+      className={cn(
+        "text-sidebar-foreground ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-accent-foreground absolute top-3.5 right-3 flex aspect-square w-5 items-center justify-center rounded-md p-0 outline-hidden transition-transform focus-visible:ring-2 [&>svg]:size-4 [&>svg]:shrink-0",
+        // Increases the hit area of the button on mobile.
+        "after:absolute after:-inset-2 md:after:hidden",
+        "group-data-[collapsible=icon]:hidden",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function SidebarGroupContent({
+  className,
+  ...props
+}: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="sidebar-group-content"
+      data-sidebar="group-content"
+      className={cn("w-full text-sm", className)}
+      {...props}
+    />
+  )
+}
+
+function SidebarMenu({ className, ...props }: React.ComponentProps<"ul">) {
+  return (
+    <ul
+      data-slot="sidebar-menu"
+      data-sidebar="menu"
+      className={cn("flex w-full min-w-0 flex-col gap-1", className)}
+      {...props}
+    />
+  )
+}
+
+function SidebarMenuItem({ className, ...props }: React.ComponentProps<"li">) {
+  return (
+    <li
+      data-slot="sidebar-menu-item"
+      data-sidebar="menu-item"
+      className={cn("group/menu-item relative", className)}
+      {...props}
+    />
+  )
+}
+
+const sidebarMenuButtonVariants = cva(
+  "peer/menu-button flex w-full items-center gap-2 overflow-hidden rounded-md p-2 text-left text-sm outline-hidden ring-sidebar-ring transition-[width,height,padding] hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 group-has-data-[sidebar=menu-action]/menu-item:pr-8 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-[active=true]:bg-sidebar-accent data-[active=true]:font-medium data-[active=true]:text-sidebar-accent-foreground data-[state=open]:hover:bg-sidebar-accent data-[state=open]:hover:text-sidebar-accent-foreground group-data-[collapsible=icon]:size-8! group-data-[collapsible=icon]:p-2! [&>span:last-child]:truncate [&>svg]:size-4 [&>svg]:shrink-0",
+  {
+    variants: {
+      variant: {
+        default: "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+        outline:
+          "bg-background shadow-[0_0_0_1px_hsl(var(--sidebar-border))] hover:bg-sidebar-accent hover:text-sidebar-accent-foreground hover:shadow-[0_0_0_1px_hsl(var(--sidebar-accent))]",
+      },
+      size: {
+        default: "h-8 text-sm",
+        sm: "h-7 text-xs",
+        lg: "h-12 text-sm group-data-[collapsible=icon]:p-0!",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+      size: "default",
+    },
+  }
+)
+
+function SidebarMenuButton({
+  asChild = false,
+  isActive = false,
+  variant = "default",
+  size = "default",
+  tooltip,
+  className,
+  ...props
+}: React.ComponentProps<"button"> & {
+  asChild?: boolean
+  isActive?: boolean
+  tooltip?: string | React.ComponentProps<typeof TooltipContent>
+} & VariantProps<typeof sidebarMenuButtonVariants>) {
+  const Comp = asChild ? Slot : "button"
+  const { isMobile, state } = useSidebar()
+
+  const button = (
+    <Comp
+      data-slot="sidebar-menu-button"
+      data-sidebar="menu-button"
+      data-size={size}
+      data-active={isActive}
+      className={cn(sidebarMenuButtonVariants({ variant, size }), className)}
+      {...props}
+    />
+  )
+
+  if (!tooltip) {
+    return button
+  }
+
+  if (typeof tooltip === "string") {
+    tooltip = {
+      children: tooltip,
+    }
+  }
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{button}</TooltipTrigger>
+      <TooltipContent
+        side="right"
+        align="center"
+        hidden={state !== "collapsed" || isMobile}
+        {...tooltip}
+      />
+    </Tooltip>
+  )
+}
+
+function SidebarMenuAction({
+  className,
+  asChild = false,
+  showOnHover = false,
+  ...props
+}: React.ComponentProps<"button"> & {
+  asChild?: boolean
+  showOnHover?: boolean
+}) {
+  const Comp = asChild ? Slot : "button"
+
+  return (
+    <Comp
+      data-slot="sidebar-menu-action"
+      data-sidebar="menu-action"
+      className={cn(
+        "text-sidebar-foreground ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-accent-foreground peer-hover/menu-button:text-sidebar-accent-foreground absolute top-1.5 right-1 flex aspect-square w-5 items-center justify-center rounded-md p-0 outline-hidden transition-transform focus-visible:ring-2 [&>svg]:size-4 [&>svg]:shrink-0",
+        // Increases the hit area of the button on mobile.
+        "after:absolute after:-inset-2 md:after:hidden",
+        "peer-data-[size=sm]/menu-button:top-1",
+        "peer-data-[size=default]/menu-button:top-1.5",
+        "peer-data-[size=lg]/menu-button:top-2.5",
+        "group-data-[collapsible=icon]:hidden",
+        showOnHover &&
+          "peer-data-[active=true]/menu-button:text-sidebar-accent-foreground group-focus-within/menu-item:opacity-100 group-hover/menu-item:opacity-100 data-[state=open]:opacity-100 md:opacity-0",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function SidebarMenuBadge({
+  className,
+  ...props
+}: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="sidebar-menu-badge"
+      data-sidebar="menu-badge"
+      className={cn(
+        "text-sidebar-foreground pointer-events-none absolute right-1 flex h-5 min-w-5 items-center justify-center rounded-md px-1 text-xs font-medium tabular-nums select-none",
+        "peer-hover/menu-button:text-sidebar-accent-foreground peer-data-[active=true]/menu-button:text-sidebar-accent-foreground",
+        "peer-data-[size=sm]/menu-button:top-1",
+        "peer-data-[size=default]/menu-button:top-1.5",
+        "peer-data-[size=lg]/menu-button:top-2.5",
+        "group-data-[collapsible=icon]:hidden",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function SidebarMenuSkeleton({
+  className,
+  showIcon = false,
+  ...props
+}: React.ComponentProps<"div"> & {
+  showIcon?: boolean
+}) {
+  // Random width between 50 to 90%.
+  const width = React.useMemo(() => {
+    return `${Math.floor(Math.random() * 40) + 50}%`
+  }, [])
+
+  return (
+    <div
+      data-slot="sidebar-menu-skeleton"
+      data-sidebar="menu-skeleton"
+      className={cn("flex h-8 items-center gap-2 rounded-md px-2", className)}
+      {...props}
+    >
+      {showIcon && (
+        <Skeleton
+          className="size-4 rounded-md"
+          data-sidebar="menu-skeleton-icon"
+        />
+      )}
+      <Skeleton
+        className="h-4 max-w-(--skeleton-width) flex-1"
+        data-sidebar="menu-skeleton-text"
+        style={
+          {
+            "--skeleton-width": width,
+          } as React.CSSProperties
+        }
+      />
+    </div>
+  )
+}
+
+function SidebarMenuSub({ className, ...props }: React.ComponentProps<"ul">) {
+  return (
+    <ul
+      data-slot="sidebar-menu-sub"
+      data-sidebar="menu-sub"
+      className={cn(
+        "border-sidebar-border mx-3.5 flex min-w-0 translate-x-px flex-col gap-1 border-l px-2.5 py-0.5",
+        "group-data-[collapsible=icon]:hidden",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function SidebarMenuSubItem({
+  className,
+  ...props
+}: React.ComponentProps<"li">) {
+  return (
+    <li
+      data-slot="sidebar-menu-sub-item"
+      data-sidebar="menu-sub-item"
+      className={cn("group/menu-sub-item relative", className)}
+      {...props}
+    />
+  )
+}
+
+function SidebarMenuSubButton({
+  asChild = false,
+  size = "md",
+  isActive = false,
+  className,
+  ...props
+}: React.ComponentProps<"a"> & {
+  asChild?: boolean
+  size?: "sm" | "md"
+  isActive?: boolean
+}) {
+  const Comp = asChild ? Slot : "a"
+
+  return (
+    <Comp
+      data-slot="sidebar-menu-sub-button"
+      data-sidebar="menu-sub-button"
+      data-size={size}
+      data-active={isActive}
+      className={cn(
+        "text-sidebar-foreground ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-accent-foreground active:bg-sidebar-accent active:text-sidebar-accent-foreground [&>svg]:text-sidebar-accent-foreground flex h-7 min-w-0 -translate-x-px items-center gap-2 overflow-hidden rounded-md px-2 outline-hidden focus-visible:ring-2 disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 [&>span:last-child]:truncate [&>svg]:size-4 [&>svg]:shrink-0",
+        "data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground",
+        size === "sm" && "text-xs",
+        size === "md" && "text-sm",
+        "group-data-[collapsible=icon]:hidden",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+export {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarGroupAction,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarHeader,
+  SidebarInput,
+  SidebarInset,
+  SidebarMenu,
+  SidebarMenuAction,
+  SidebarMenuBadge,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarMenuSkeleton,
+  SidebarMenuSub,
+  SidebarMenuSubButton,
+  SidebarMenuSubItem,
+  SidebarProvider,
+  SidebarRail,
+  SidebarSeparator,
+  SidebarTrigger,
+  useSidebar,
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/card.tsx
+---BEGIN FILE CONTENTS---
+import * as React from "react"
+
+import { cn } from "@/lib/utils"
+
+function Card({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="card"
+      className={cn(
+        "bg-card text-card-foreground flex flex-col gap-6 rounded-xl border py-6 shadow-sm",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function CardHeader({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="card-header"
+      className={cn("flex flex-col gap-1.5 px-6", className)}
+      {...props}
+    />
+  )
+}
+
+function CardTitle({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="card-title"
+      className={cn("leading-none font-semibold", className)}
+      {...props}
+    />
+  )
+}
+
+function CardDescription({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="card-description"
+      className={cn("text-muted-foreground text-sm", className)}
+      {...props}
+    />
+  )
+}
+
+function CardContent({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="card-content"
+      className={cn("px-6", className)}
+      {...props}
+    />
+  )
+}
+
+function CardFooter({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="card-footer"
+      className={cn("flex items-center px-6", className)}
+      {...props}
+    />
+  )
+}
+
+export { Card, CardHeader, CardFooter, CardTitle, CardDescription, CardContent }
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/button.tsx
+---BEGIN FILE CONTENTS---
+import * as React from "react"
+import { Slot } from "@radix-ui/react-slot"
+import { cva, type VariantProps } from "class-variance-authority"
+
+import { cn } from "@/lib/utils"
+
+const buttonVariants = cva(
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive",
+  {
+    variants: {
+      variant: {
+        default:
+          "bg-primary text-primary-foreground shadow-xs hover:bg-primary/90",
+        destructive:
+          "bg-destructive text-white shadow-xs hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40 dark:bg-destructive/60",
+        outline:
+          "border bg-background shadow-xs hover:bg-accent hover:text-accent-foreground dark:bg-input/30 dark:border-input dark:hover:bg-input/50",
+        secondary:
+          "bg-secondary text-secondary-foreground shadow-xs hover:bg-secondary/80",
+        ghost:
+          "hover:bg-accent hover:text-accent-foreground dark:hover:bg-accent/50",
+        link: "text-primary underline-offset-4 hover:underline",
+      },
+      size: {
+        default: "h-9 px-4 py-2 has-[>svg]:px-3",
+        sm: "h-8 rounded-md gap-1.5 px-3 has-[>svg]:px-2.5",
+        lg: "h-10 rounded-md px-6 has-[>svg]:px-4",
+        icon: "size-9",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+      size: "default",
+    },
+  }
+)
+
+function Button({
+  className,
+  variant,
+  size,
+  asChild = false,
+  ...props
+}: React.ComponentProps<"button"> &
+  VariantProps<typeof buttonVariants> & {
+    asChild?: boolean
+  }) {
+  const Comp = asChild ? Slot : "button"
+
+  return (
+    <Comp
+      data-slot="button"
+      className={cn(buttonVariants({ variant, size, className }))}
+      {...props}
+    />
+  )
+}
+
+export { Button, buttonVariants }
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/alert-dialog.tsx
+---BEGIN FILE CONTENTS---
+import * as React from "react"
+import * as AlertDialogPrimitive from "@radix-ui/react-alert-dialog"
+
+import { cn } from "@/lib/utils"
+import { buttonVariants } from "@/components/ui/button"
+
+function AlertDialog({
+  ...props
+}: React.ComponentProps<typeof AlertDialogPrimitive.Root>) {
+  return <AlertDialogPrimitive.Root data-slot="alert-dialog" {...props} />
+}
+
+function AlertDialogTrigger({
+  ...props
+}: React.ComponentProps<typeof AlertDialogPrimitive.Trigger>) {
+  return (
+    <AlertDialogPrimitive.Trigger data-slot="alert-dialog-trigger" {...props} />
+  )
+}
+
+function AlertDialogPortal({
+  ...props
+}: React.ComponentProps<typeof AlertDialogPrimitive.Portal>) {
+  return (
+    <AlertDialogPrimitive.Portal data-slot="alert-dialog-portal" {...props} />
+  )
+}
+
+function AlertDialogOverlay({
+  className,
+  ...props
+}: React.ComponentProps<typeof AlertDialogPrimitive.Overlay>) {
+  return (
+    <AlertDialogPrimitive.Overlay
+      data-slot="alert-dialog-overlay"
+      className={cn(
+        "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed inset-0 z-50 bg-black/50",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function AlertDialogContent({
+  className,
+  ...props
+}: React.ComponentProps<typeof AlertDialogPrimitive.Content>) {
+  return (
+    <AlertDialogPortal>
+      <AlertDialogOverlay />
+      <AlertDialogPrimitive.Content
+        data-slot="alert-dialog-content"
+        className={cn(
+          "bg-background data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border p-6 shadow-lg duration-200 sm:max-w-lg",
+          className
+        )}
+        {...props}
+      />
+    </AlertDialogPortal>
+  )
+}
+
+function AlertDialogHeader({
+  className,
+  ...props
+}: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="alert-dialog-header"
+      className={cn("flex flex-col gap-2 text-center sm:text-left", className)}
+      {...props}
+    />
+  )
+}
+
+function AlertDialogFooter({
+  className,
+  ...props
+}: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="alert-dialog-footer"
+      className={cn(
+        "flex flex-col-reverse gap-2 sm:flex-row sm:justify-end",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function AlertDialogTitle({
+  className,
+  ...props
+}: React.ComponentProps<typeof AlertDialogPrimitive.Title>) {
+  return (
+    <AlertDialogPrimitive.Title
+      data-slot="alert-dialog-title"
+      className={cn("text-lg font-semibold", className)}
+      {...props}
+    />
+  )
+}
+
+function AlertDialogDescription({
+  className,
+  ...props
+}: React.ComponentProps<typeof AlertDialogPrimitive.Description>) {
+  return (
+    <AlertDialogPrimitive.Description
+      data-slot="alert-dialog-description"
+      className={cn("text-muted-foreground text-sm", className)}
+      {...props}
+    />
+  )
+}
+
+function AlertDialogAction({
+  className,
+  ...props
+}: React.ComponentProps<typeof AlertDialogPrimitive.Action>) {
+  return (
+    <AlertDialogPrimitive.Action
+      className={cn(buttonVariants(), className)}
+      {...props}
+    />
+  )
+}
+
+function AlertDialogCancel({
+  className,
+  ...props
+}: React.ComponentProps<typeof AlertDialogPrimitive.Cancel>) {
+  return (
+    <AlertDialogPrimitive.Cancel
+      className={cn(buttonVariants({ variant: "outline" }), className)}
+      {...props}
+    />
+  )
+}
+
+export {
+  AlertDialog,
+  AlertDialogPortal,
+  AlertDialogOverlay,
+  AlertDialogTrigger,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogFooter,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogAction,
+  AlertDialogCancel,
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/badge.tsx
+---BEGIN FILE CONTENTS---
+import * as React from "react"
+import { Slot } from "@radix-ui/react-slot"
+import { cva, type VariantProps } from "class-variance-authority"
+
+import { cn } from "@/lib/utils"
+
+const badgeVariants = cva(
+  "inline-flex items-center justify-center rounded-md border px-2 py-0.5 text-xs font-medium w-fit whitespace-nowrap shrink-0 [&>svg]:size-3 gap-1 [&>svg]:pointer-events-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive transition-[color,box-shadow] overflow-auto",
+  {
+    variants: {
+      variant: {
+        default:
+          "border-transparent bg-primary text-primary-foreground [a&]:hover:bg-primary/90",
+        secondary:
+          "border-transparent bg-secondary text-secondary-foreground [a&]:hover:bg-secondary/90",
+        destructive:
+          "border-transparent bg-destructive text-white [a&]:hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40",
+        outline:
+          "text-foreground [a&]:hover:bg-accent [a&]:hover:text-accent-foreground",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+    },
+  }
+)
+
+function Badge({
+  className,
+  variant,
+  asChild = false,
+  ...props
+}: React.ComponentProps<"span"> &
+  VariantProps<typeof badgeVariants> & { asChild?: boolean }) {
+  const Comp = asChild ? Slot : "span"
+
+  return (
+    <Comp
+      data-slot="badge"
+      className={cn(badgeVariants({ variant }), className)}
+      {...props}
+    />
+  )
+}
+
+export { Badge, badgeVariants }
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/input.tsx
+---BEGIN FILE CONTENTS---
+import * as React from "react"
+
+import { cn } from "@/lib/utils"
+
+function Input({ className, type, ...props }: React.ComponentProps<"input">) {
+  return (
+    <input
+      type={type}
+      data-slot="input"
+      className={cn(
+        "border-input file:text-foreground placeholder:text-muted-foreground selection:bg-primary selection:text-primary-foreground flex h-9 w-full min-w-0 rounded-md border bg-transparent px-3 py-1 text-base shadow-xs transition-[color,box-shadow] outline-none file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm",
+        "focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]",
+        "aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+export { Input }
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/popover.tsx
+---BEGIN FILE CONTENTS---
+import * as React from "react"
+import * as PopoverPrimitive from "@radix-ui/react-popover"
+
+import { cn } from "@/lib/utils"
+
+function Popover({
+  ...props
+}: React.ComponentProps<typeof PopoverPrimitive.Root>) {
+  return <PopoverPrimitive.Root data-slot="popover" {...props} />
+}
+
+function PopoverTrigger({
+  ...props
+}: React.ComponentProps<typeof PopoverPrimitive.Trigger>) {
+  return <PopoverPrimitive.Trigger data-slot="popover-trigger" {...props} />
+}
+
+function PopoverContent({
+  className,
+  align = "center",
+  sideOffset = 4,
+  ...props
+}: React.ComponentProps<typeof PopoverPrimitive.Content>) {
+  return (
+    <PopoverPrimitive.Portal>
+      <PopoverPrimitive.Content
+        data-slot="popover-content"
+        align={align}
+        sideOffset={sideOffset}
+        className={cn(
+          "bg-popover text-popover-foreground data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 w-72 origin-(--radix-popover-content-transform-origin) rounded-md border p-4 shadow-md outline-hidden",
+          className
+        )}
+        {...props}
+      />
+    </PopoverPrimitive.Portal>
+  )
+}
+
+function PopoverAnchor({
+  ...props
+}: React.ComponentProps<typeof PopoverPrimitive.Anchor>) {
+  return <PopoverPrimitive.Anchor data-slot="popover-anchor" {...props} />
+}
+
+export { Popover, PopoverTrigger, PopoverContent, PopoverAnchor }
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/separator.tsx
+---BEGIN FILE CONTENTS---
+import * as React from "react"
+import * as SeparatorPrimitive from "@radix-ui/react-separator"
+
+import { cn } from "@/lib/utils"
+
+function Separator({
+  className,
+  orientation = "horizontal",
+  decorative = true,
+  ...props
+}: React.ComponentProps<typeof SeparatorPrimitive.Root>) {
+  return (
+    <SeparatorPrimitive.Root
+      data-slot="separator-root"
+      decorative={decorative}
+      orientation={orientation}
+      className={cn(
+        "bg-border shrink-0 data-[orientation=horizontal]:h-px data-[orientation=horizontal]:w-full data-[orientation=vertical]:h-full data-[orientation=vertical]:w-px",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+export { Separator }
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/sheet.tsx
+---BEGIN FILE CONTENTS---
+import * as React from "react"
+import * as SheetPrimitive from "@radix-ui/react-dialog"
+import { XIcon } from "lucide-react"
+
+import { cn } from "@/lib/utils"
+
+function Sheet({ ...props }: React.ComponentProps<typeof SheetPrimitive.Root>) {
+  return <SheetPrimitive.Root data-slot="sheet" {...props} />
+}
+
+function SheetTrigger({
+  ...props
+}: React.ComponentProps<typeof SheetPrimitive.Trigger>) {
+  return <SheetPrimitive.Trigger data-slot="sheet-trigger" {...props} />
+}
+
+function SheetClose({
+  ...props
+}: React.ComponentProps<typeof SheetPrimitive.Close>) {
+  return <SheetPrimitive.Close data-slot="sheet-close" {...props} />
+}
+
+function SheetPortal({
+  ...props
+}: React.ComponentProps<typeof SheetPrimitive.Portal>) {
+  return <SheetPrimitive.Portal data-slot="sheet-portal" {...props} />
+}
+
+function SheetOverlay({
+  className,
+  ...props
+}: React.ComponentProps<typeof SheetPrimitive.Overlay>) {
+  return (
+    <SheetPrimitive.Overlay
+      data-slot="sheet-overlay"
+      className={cn(
+        "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed inset-0 z-50 bg-black/80",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function SheetContent({
+  className,
+  children,
+  side = "right",
+  ...props
+}: React.ComponentProps<typeof SheetPrimitive.Content> & {
+  side?: "top" | "right" | "bottom" | "left"
+}) {
+  return (
+    <SheetPortal>
+      <SheetOverlay />
+      <SheetPrimitive.Content
+        data-slot="sheet-content"
+        className={cn(
+          "bg-background data-[state=open]:animate-in data-[state=closed]:animate-out fixed z-50 flex flex-col gap-4 shadow-lg transition ease-in-out data-[state=closed]:duration-300 data-[state=open]:duration-500",
+          side === "right" &&
+            "data-[state=closed]:slide-out-to-right data-[state=open]:slide-in-from-right inset-y-0 right-0 h-full w-3/4 border-l sm:max-w-sm",
+          side === "left" &&
+            "data-[state=closed]:slide-out-to-left data-[state=open]:slide-in-from-left inset-y-0 left-0 h-full w-3/4 border-r sm:max-w-sm",
+          side === "top" &&
+            "data-[state=closed]:slide-out-to-top data-[state=open]:slide-in-from-top inset-x-0 top-0 h-auto border-b",
+          side === "bottom" &&
+            "data-[state=closed]:slide-out-to-bottom data-[state=open]:slide-in-from-bottom inset-x-0 bottom-0 h-auto border-t",
+          className
+        )}
+        {...props}
+      >
+        {children}
+        <SheetPrimitive.Close className="ring-offset-background focus:ring-ring data-[state=open]:bg-secondary absolute top-4 right-4 rounded-xs opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none">
+          <XIcon className="size-4" />
+          <span className="sr-only">Close</span>
+        </SheetPrimitive.Close>
+      </SheetPrimitive.Content>
+    </SheetPortal>
+  )
+}
+
+function SheetHeader({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="sheet-header"
+      className={cn("flex flex-col gap-1.5 p-4", className)}
+      {...props}
+    />
+  )
+}
+
+function SheetFooter({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="sheet-footer"
+      className={cn("mt-auto flex flex-col gap-2 p-4", className)}
+      {...props}
+    />
+  )
+}
+
+function SheetTitle({
+  className,
+  ...props
+}: React.ComponentProps<typeof SheetPrimitive.Title>) {
+  return (
+    <SheetPrimitive.Title
+      data-slot="sheet-title"
+      className={cn("text-foreground font-semibold", className)}
+      {...props}
+    />
+  )
+}
+
+function SheetDescription({
+  className,
+  ...props
+}: React.ComponentProps<typeof SheetPrimitive.Description>) {
+  return (
+    <SheetPrimitive.Description
+      data-slot="sheet-description"
+      className={cn("text-muted-foreground text-sm", className)}
+      {...props}
+    />
+  )
+}
+
+export {
+  Sheet,
+  SheetTrigger,
+  SheetClose,
+  SheetContent,
+  SheetHeader,
+  SheetFooter,
+  SheetTitle,
+  SheetDescription,
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/tooltip.tsx
+---BEGIN FILE CONTENTS---
+import * as React from "react"
+import * as TooltipPrimitive from "@radix-ui/react-tooltip"
+
+import { cn } from "@/lib/utils"
+
+function TooltipProvider({
+  delayDuration = 0,
+  ...props
+}: React.ComponentProps<typeof TooltipPrimitive.Provider>) {
+  return (
+    <TooltipPrimitive.Provider
+      data-slot="tooltip-provider"
+      delayDuration={delayDuration}
+      {...props}
+    />
+  )
+}
+
+function Tooltip({
+  ...props
+}: React.ComponentProps<typeof TooltipPrimitive.Root>) {
+  return (
+    <TooltipProvider>
+      <TooltipPrimitive.Root data-slot="tooltip" {...props} />
+    </TooltipProvider>
+  )
+}
+
+function TooltipTrigger({
+  ...props
+}: React.ComponentProps<typeof TooltipPrimitive.Trigger>) {
+  return <TooltipPrimitive.Trigger data-slot="tooltip-trigger" {...props} />
+}
+
+function TooltipContent({
+  className,
+  sideOffset = 4,
+  children,
+  ...props
+}: React.ComponentProps<typeof TooltipPrimitive.Content>) {
+  return (
+    <TooltipPrimitive.Portal>
+      <TooltipPrimitive.Content
+        data-slot="tooltip-content"
+        sideOffset={sideOffset}
+        className={cn(
+          "bg-primary text-primary-foreground animate-in fade-in-0 zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 max-w-sm rounded-md px-3 py-1.5 text-xs",
+          className
+        )}
+        {...props}
+      >
+        {children}
+        <TooltipPrimitive.Arrow className="bg-primary fill-primary z-50 size-2.5 translate-y-[calc(-50%_-_2px)] rotate-45 rounded-[2px]" />
+      </TooltipPrimitive.Content>
+    </TooltipPrimitive.Portal>
+  )
+}
+
+export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider }
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/breadcrumb.tsx
+---BEGIN FILE CONTENTS---
+import * as React from "react"
+import { Slot } from "@radix-ui/react-slot"
+import { ChevronRight, MoreHorizontal } from "lucide-react"
+
+import { cn } from "@/lib/utils"
+
+function Breadcrumb({ ...props }: React.ComponentProps<"nav">) {
+  return <nav aria-label="breadcrumb" data-slot="breadcrumb" {...props} />
+}
+
+function BreadcrumbList({ className, ...props }: React.ComponentProps<"ol">) {
+  return (
+    <ol
+      data-slot="breadcrumb-list"
+      className={cn(
+        "text-muted-foreground flex flex-wrap items-center gap-1.5 text-sm break-words sm:gap-2.5",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function BreadcrumbItem({ className, ...props }: React.ComponentProps<"li">) {
+  return (
+    <li
+      data-slot="breadcrumb-item"
+      className={cn("inline-flex items-center gap-1.5", className)}
+      {...props}
+    />
+  )
+}
+
+function BreadcrumbLink({
+  asChild,
+  className,
+  ...props
+}: React.ComponentProps<"a"> & {
+  asChild?: boolean
+}) {
+  const Comp = asChild ? Slot : "a"
+
+  return (
+    <Comp
+      data-slot="breadcrumb-link"
+      className={cn("hover:text-foreground transition-colors", className)}
+      {...props}
+    />
+  )
+}
+
+function BreadcrumbPage({ className, ...props }: React.ComponentProps<"span">) {
+  return (
+    <span
+      data-slot="breadcrumb-page"
+      role="link"
+      aria-disabled="true"
+      aria-current="page"
+      className={cn("text-foreground font-normal", className)}
+      {...props}
+    />
+  )
+}
+
+function BreadcrumbSeparator({
+  children,
+  className,
+  ...props
+}: React.ComponentProps<"li">) {
+  return (
+    <li
+      data-slot="breadcrumb-separator"
+      role="presentation"
+      aria-hidden="true"
+      className={cn("[&>svg]:size-3.5", className)}
+      {...props}
+    >
+      {children ?? <ChevronRight />}
+    </li>
+  )
+}
+
+function BreadcrumbEllipsis({
+  className,
+  ...props
+}: React.ComponentProps<"span">) {
+  return (
+    <span
+      data-slot="breadcrumb-ellipsis"
+      role="presentation"
+      aria-hidden="true"
+      className={cn("flex size-9 items-center justify-center", className)}
+      {...props}
+    >
+      <MoreHorizontal className="size-4" />
+      <span className="sr-only">More</span>
+    </span>
+  )
+}
+
+export {
+  Breadcrumb,
+  BreadcrumbList,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+  BreadcrumbEllipsis,
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/scroll-area.tsx
+---BEGIN FILE CONTENTS---
+import * as React from "react"
+import * as ScrollAreaPrimitive from "@radix-ui/react-scroll-area"
+
+import { cn } from "@/lib/utils"
+
+function ScrollArea({
+  className,
+  children,
+  ...props
+}: React.ComponentProps<typeof ScrollAreaPrimitive.Root>) {
+  return (
+    <ScrollAreaPrimitive.Root
+      data-slot="scroll-area"
+      className={cn("relative", className)}
+      {...props}
+    >
+      <ScrollAreaPrimitive.Viewport
+        data-slot="scroll-area-viewport"
+        className="focus-visible:ring-ring/50 size-full rounded-[inherit] transition-[color,box-shadow] outline-none focus-visible:ring-[3px] focus-visible:outline-1"
+      >
+        {children}
+      </ScrollAreaPrimitive.Viewport>
+      <ScrollBar />
+      <ScrollAreaPrimitive.Corner />
+    </ScrollAreaPrimitive.Root>
+  )
+}
+
+function ScrollBar({
+  className,
+  orientation = "vertical",
+  ...props
+}: React.ComponentProps<typeof ScrollAreaPrimitive.ScrollAreaScrollbar>) {
+  return (
+    <ScrollAreaPrimitive.ScrollAreaScrollbar
+      data-slot="scroll-area-scrollbar"
+      orientation={orientation}
+      className={cn(
+        "flex touch-none p-px transition-colors select-none",
+        orientation === "vertical" &&
+          "h-full w-2.5 border-l border-l-transparent",
+        orientation === "horizontal" &&
+          "h-2.5 flex-col border-t border-t-transparent",
+        className
+      )}
+      {...props}
+    >
+      <ScrollAreaPrimitive.ScrollAreaThumb
+        data-slot="scroll-area-thumb"
+        className="bg-border relative flex-1 rounded-full"
+      />
+    </ScrollAreaPrimitive.ScrollAreaScrollbar>
+  )
+}
+
+export { ScrollArea, ScrollBar }
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/toggle-group.tsx
+---BEGIN FILE CONTENTS---
+import * as React from "react"
+import * as ToggleGroupPrimitive from "@radix-ui/react-toggle-group"
+import { type VariantProps } from "class-variance-authority"
+
+import { cn } from "@/lib/utils"
+import { toggleVariants } from "@/components/ui/toggle"
+
+const ToggleGroupContext = React.createContext<
+  VariantProps<typeof toggleVariants>
+>({
+  size: "default",
+  variant: "default",
+})
+
+function ToggleGroup({
+  className,
+  variant,
+  size,
+  children,
+  ...props
+}: React.ComponentProps<typeof ToggleGroupPrimitive.Root> &
+  VariantProps<typeof toggleVariants>) {
+  return (
+    <ToggleGroupPrimitive.Root
+      data-slot="toggle-group"
+      data-variant={variant}
+      data-size={size}
+      className={cn(
+        "group/toggle-group flex items-center rounded-md data-[variant=outline]:shadow-xs",
+        className
+      )}
+      {...props}
+    >
+      <ToggleGroupContext.Provider value={{ variant, size }}>
+        {children}
+      </ToggleGroupContext.Provider>
+    </ToggleGroupPrimitive.Root>
+  )
+}
+
+function ToggleGroupItem({
+  className,
+  children,
+  variant,
+  size,
+  ...props
+}: React.ComponentProps<typeof ToggleGroupPrimitive.Item> &
+  VariantProps<typeof toggleVariants>) {
+  const context = React.useContext(ToggleGroupContext)
+
+  return (
+    <ToggleGroupPrimitive.Item
+      data-slot="toggle-group-item"
+      data-variant={context.variant || variant}
+      data-size={context.size || size}
+      className={cn(
+        toggleVariants({
+          variant: context.variant || variant,
+          size: context.size || size,
+        }),
+        "min-w-0 shrink-0 rounded-none shadow-none first:rounded-l-md last:rounded-r-md focus:z-10 focus-visible:z-10 data-[variant=outline]:border-l-0 data-[variant=outline]:first:border-l",
+        className
+      )}
+      {...props}
+    >
+      {children}
+    </ToggleGroupPrimitive.Item>
+  )
+}
+
+export { ToggleGroup, ToggleGroupItem }
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/calendar.tsx
+---BEGIN FILE CONTENTS---
+"use client"
+
+import * as React from "react"
+import { ChevronLeft, ChevronRight } from "lucide-react"
+import { DayPicker, type DayPickerProps } from "react-day-picker"
+
+import { cn } from "@/lib/utils"
+import { buttonVariants } from "@/components/ui/button"
+
+export type CalendarProps = React.ComponentProps<typeof DayPicker>
+
+function Calendar({
+  className,
+  classNames,
+  showOutsideDays = true,
+  ...props
+}: CalendarProps) {
+  return (
+    <DayPicker
+      showOutsideDays={showOutsideDays}
+      className={cn("p-3", className)}
+      classNames={{
+        months: "flex flex-col sm:flex-row gap-2",
+        month: "flex flex-col gap-4",
+        caption: "flex justify-center pt-1 relative items-center w-full",
+        caption_label: "text-sm font-medium",
+        nav: "flex items-center gap-1",
+        nav_button: cn(
+          buttonVariants({ variant: "outline" }),
+          "size-7 bg-transparent p-0 opacity-50 hover:opacity-100"
+        ),
+        nav_button_previous: "absolute left-1",
+        nav_button_next: "absolute right-1",
+        table: "w-full border-collapse space-x-1",
+        head_row: "flex",
+        head_cell:
+          "text-muted-foreground rounded-md w-8 font-normal text-[0.8rem]",
+        row: "flex w-full mt-2",
+        cell: cn(
+          "relative p-0 text-center text-sm focus-within:relative focus-within:z-20 [&:has([aria-selected])]:bg-accent [&:has([aria-selected].day-range-end)]:rounded-r-md",
+          props.mode === "range"
+            ? "[&:has(>.day-range-end)]:rounded-r-md [&:has(>.day-range-start)]:rounded-l-md first:[&:has([aria-selected])]:rounded-l-md last:[&:has([aria-selected])]:rounded-r-md"
+            : "[&:has([aria-selected])]:rounded-md"
+        ),
+        day: cn(
+          buttonVariants({ variant: "ghost" }),
+          "size-8 p-0 font-normal aria-selected:opacity-100"
+        ),
+        day_range_start:
+          "day-range-start aria-selected:bg-primary aria-selected:text-primary-foreground",
+        day_range_end:
+          "day-range-end aria-selected:bg-primary aria-selected:text-primary-foreground",
+        day_selected:
+          "bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground focus:bg-primary focus:text-primary-foreground",
+        day_today: "bg-accent text-accent-foreground",
+        day_outside:
+          "day-outside text-muted-foreground aria-selected:text-muted-foreground",
+        day_disabled: "text-muted-foreground opacity-50",
+        day_range_middle:
+          "aria-selected:bg-accent aria-selected:text-accent-foreground",
+        day_hidden: "invisible",
+        ...classNames,
+      }}
+      components={{
+        IconLeft: ({ ...props }) => (
+          <ChevronLeft className="size-4" {...props} />
+        ),
+        IconRight: ({ ...props }) => (
+          <ChevronRight className="size-4" {...props} />
+        ),
+      }}
+      {...props}
+    />
+  )
+}
+
+export { Calendar }
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/label.tsx
+---BEGIN FILE CONTENTS---
+import * as React from "react"
+import * as LabelPrimitive from "@radix-ui/react-label"
+
+import { cn } from "@/lib/utils"
+
+function Label({
+  className,
+  ...props
+}: React.ComponentProps<typeof LabelPrimitive.Root>) {
+  return (
+    <LabelPrimitive.Root
+      data-slot="label"
+      className={cn(
+        "text-sm leading-none font-medium select-none group-data-[disabled=true]:pointer-events-none group-data-[disabled=true]:opacity-50 peer-disabled:cursor-not-allowed peer-disabled:opacity-50",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+export { Label }
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/textarea.tsx
+---BEGIN FILE CONTENTS---
+import * as React from "react"
+
+import { cn } from "@/lib/utils"
+
+function Textarea({ className, ...props }: React.ComponentProps<"textarea">) {
+  return (
+    <textarea
+      data-slot="textarea"
+      className={cn(
+        "border-input placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive dark:bg-input/30 flex field-sizing-content min-h-16 w-full rounded-md border bg-transparent px-3 py-2 text-base shadow-xs transition-[color,box-shadow] outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50 md:text-sm",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+export { Textarea }
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/navigation-menu.tsx
+---BEGIN FILE CONTENTS---
+import * as React from "react"
+import * as NavigationMenuPrimitive from "@radix-ui/react-navigation-menu"
+import { cva } from "class-variance-authority"
+import { ChevronDownIcon } from "lucide-react"
+
+import { cn } from "@/lib/utils"
+
+function NavigationMenu({
+  className,
+  children,
+  viewport = true,
+  ...props
+}: React.ComponentProps<typeof NavigationMenuPrimitive.Root> & {
+  viewport?: boolean
+}) {
+  return (
+    <NavigationMenuPrimitive.Root
+      data-slot="navigation-menu"
+      data-viewport={viewport}
+      className={cn(
+        "group/navigation-menu relative flex max-w-max flex-1 items-center justify-center",
+        className
+      )}
+      {...props}
+    >
+      {children}
+      {viewport && <NavigationMenuViewport />}
+    </NavigationMenuPrimitive.Root>
+  )
+}
+
+function NavigationMenuList({
+  className,
+  ...props
+}: React.ComponentProps<typeof NavigationMenuPrimitive.List>) {
+  return (
+    <NavigationMenuPrimitive.List
+      data-slot="navigation-menu-list"
+      className={cn(
+        "group flex flex-1 list-none items-center justify-center gap-1",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function NavigationMenuItem({
+  className,
+  ...props
+}: React.ComponentProps<typeof NavigationMenuPrimitive.Item>) {
+  return (
+    <NavigationMenuPrimitive.Item
+      data-slot="navigation-menu-item"
+      className={cn("relative", className)}
+      {...props}
+    />
+  )
+}
+
+const navigationMenuTriggerStyle = cva(
+  "group inline-flex h-9 w-max items-center justify-center rounded-md bg-background px-4 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground disabled:pointer-events-none disabled:opacity-50 data-[active=true]:bg-accent/50 data-[state=open]:bg-accent/50 data-[active=true]:text-accent-foreground ring-ring/10 dark:ring-ring/20 dark:outline-ring/40 outline-ring/50 transition-[color,box-shadow] focus-visible:ring-4 focus-visible:outline-1"
+)
+
+function NavigationMenuTrigger({
+  className,
+  children,
+  ...props
+}: React.ComponentProps<typeof NavigationMenuPrimitive.Trigger>) {
+  return (
+    <NavigationMenuPrimitive.Trigger
+      data-slot="navigation-menu-trigger"
+      className={cn(navigationMenuTriggerStyle(), "group", className)}
+      {...props}
+    >
+      {children}{" "}
+      <ChevronDownIcon
+        className="relative top-[1px] ml-1 size-3 transition duration-300 group-data-[state=open]:rotate-180"
+        aria-hidden="true"
+      />
+    </NavigationMenuPrimitive.Trigger>
+  )
+}
+
+function NavigationMenuContent({
+  className,
+  ...props
+}: React.ComponentProps<typeof NavigationMenuPrimitive.Content>) {
+  return (
+    <NavigationMenuPrimitive.Content
+      data-slot="navigation-menu-content"
+      className={cn(
+        "data-[motion^=from-]:animate-in data-[motion^=to-]:animate-out data-[motion^=from-]:fade-in data-[motion^=to-]:fade-out data-[motion=from-end]:slide-in-from-right-52 data-[motion=from-start]:slide-in-from-left-52 data-[motion=to-end]:slide-out-to-right-52 data-[motion=to-start]:slide-out-to-left-52 top-0 left-0 w-full p-2 pr-2.5 md:absolute md:w-auto",
+        "group-data-[viewport=false]/navigation-menu:bg-popover group-data-[viewport=false]/navigation-menu:text-popover-foreground group-data-[viewport=false]/navigation-menu:data-[state=open]:animate-in group-data-[viewport=false]/navigation-menu:data-[state=closed]:animate-out group-data-[viewport=false]/navigation-menu:data-[state=closed]:zoom-out-95 group-data-[viewport=false]/navigation-menu:data-[state=open]:zoom-in-95 group-data-[viewport=false]/navigation-menu:data-[state=open]:fade-in-0 group-data-[viewport=false]/navigation-menu:data-[state=closed]:fade-out-0 group-data-[viewport=false]/navigation-menu:top-full group-data-[viewport=false]/navigation-menu:mt-1.5 group-data-[viewport=false]/navigation-menu:overflow-hidden group-data-[viewport=false]/navigation-menu:rounded-md group-data-[viewport=false]/navigation-menu:border group-data-[viewport=false]/navigation-menu:shadow group-data-[viewport=false]/navigation-menu:duration-200 **:data-[slot=navigation-menu-link]:focus:ring-0 **:data-[slot=navigation-menu-link]:focus:outline-none",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function NavigationMenuViewport({
+  className,
+  ...props
+}: React.ComponentProps<typeof NavigationMenuPrimitive.Viewport>) {
+  return (
+    <div
+      className={cn(
+        "absolute top-full left-0 isolate z-50 flex justify-center"
+      )}
+    >
+      <NavigationMenuPrimitive.Viewport
+        data-slot="navigation-menu-viewport"
+        className={cn(
+          "origin-top-center bg-popover text-popover-foreground data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-90 relative mt-1.5 h-[var(--radix-navigation-menu-viewport-height)] w-full overflow-hidden rounded-md border shadow md:w-[var(--radix-navigation-menu-viewport-width)]",
+          className
+        )}
+        {...props}
+      />
+    </div>
+  )
+}
+
+function NavigationMenuLink({
+  className,
+  ...props
+}: React.ComponentProps<typeof NavigationMenuPrimitive.Link>) {
+  return (
+    <NavigationMenuPrimitive.Link
+      data-slot="navigation-menu-link"
+      className={cn(
+        "hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[active=true]:bg-accent/50 data-[active=true]:text-accent-foreground ring-ring/10 dark:ring-ring/20 dark:outline-ring/40 outline-ring/50 [&_svg:not([class*='text-'])]:text-muted-foreground flex flex-col gap-1 rounded-sm p-2 text-sm transition-[color,box-shadow] focus-visible:ring-4 focus-visible:outline-1 [&_svg:not([class*='size-'])]:size-4",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function NavigationMenuIndicator({
+  className,
+  ...props
+}: React.ComponentProps<typeof NavigationMenuPrimitive.Indicator>) {
+  return (
+    <NavigationMenuPrimitive.Indicator
+      data-slot="navigation-menu-indicator"
+      className={cn(
+        "data-[state=visible]:animate-in data-[state=hidden]:animate-out data-[state=hidden]:fade-out data-[state=visible]:fade-in top-full z-[1] flex h-1.5 items-end justify-center overflow-hidden",
+        className
+      )}
+      {...props}
+    >
+      <div className="bg-border relative top-[60%] h-2 w-2 rotate-45 rounded-tl-sm shadow-md" />
+    </NavigationMenuPrimitive.Indicator>
+  )
+}
+
+export {
+  NavigationMenu,
+  NavigationMenuList,
+  NavigationMenuItem,
+  NavigationMenuContent,
+  NavigationMenuTrigger,
+  NavigationMenuLink,
+  NavigationMenuIndicator,
+  NavigationMenuViewport,
+  navigationMenuTriggerStyle,
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/select.tsx
+---BEGIN FILE CONTENTS---
+import * as React from "react"
+import * as SelectPrimitive from "@radix-ui/react-select"
+import { CheckIcon, ChevronDownIcon, ChevronUpIcon } from "lucide-react"
+
+import { cn } from "@/lib/utils"
+
+function Select({
+  ...props
+}: React.ComponentProps<typeof SelectPrimitive.Root>) {
+  return <SelectPrimitive.Root data-slot="select" {...props} />
+}
+
+function SelectGroup({
+  ...props
+}: React.ComponentProps<typeof SelectPrimitive.Group>) {
+  return <SelectPrimitive.Group data-slot="select-group" {...props} />
+}
+
+function SelectValue({
+  ...props
+}: React.ComponentProps<typeof SelectPrimitive.Value>) {
+  return <SelectPrimitive.Value data-slot="select-value" {...props} />
+}
+
+function SelectTrigger({
+  className,
+  children,
+  ...props
+}: React.ComponentProps<typeof SelectPrimitive.Trigger>) {
+  return (
+    <SelectPrimitive.Trigger
+      data-slot="select-trigger"
+      className={cn(
+        "border-input data-[placeholder]:text-muted-foreground [&_svg:not([class*='text-'])]:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive flex h-9 w-full items-center justify-between rounded-md border bg-transparent px-3 py-2 text-sm shadow-xs transition-[color,box-shadow] outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50 *:data-[slot=select-value]:flex *:data-[slot=select-value]:items-center *:data-[slot=select-value]:gap-2 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 [&>span]:line-clamp-1",
+        className
+      )}
+      {...props}
+    >
+      {children}
+      <SelectPrimitive.Icon asChild>
+        <ChevronDownIcon className="size-4 opacity-50" />
+      </SelectPrimitive.Icon>
+    </SelectPrimitive.Trigger>
+  )
+}
+
+function SelectContent({
+  className,
+  children,
+  position = "popper",
+  ...props
+}: React.ComponentProps<typeof SelectPrimitive.Content>) {
+  return (
+    <SelectPrimitive.Portal>
+      <SelectPrimitive.Content
+        data-slot="select-content"
+        className={cn(
+          "bg-popover text-popover-foreground data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 relative z-50 max-h-96 min-w-[8rem] overflow-hidden rounded-md border shadow-md",
+          position === "popper" &&
+            "data-[side=bottom]:translate-y-1 data-[side=left]:-translate-x-1 data-[side=right]:translate-x-1 data-[side=top]:-translate-y-1",
+          className
+        )}
+        position={position}
+        {...props}
+      >
+        <SelectScrollUpButton />
+        <SelectPrimitive.Viewport
+          className={cn(
+            "p-1",
+            position === "popper" &&
+              "h-[var(--radix-select-trigger-height)] w-full min-w-[var(--radix-select-trigger-width)] scroll-my-1"
+          )}
+        >
+          {children}
+        </SelectPrimitive.Viewport>
+        <SelectScrollDownButton />
+      </SelectPrimitive.Content>
+    </SelectPrimitive.Portal>
+  )
+}
+
+function SelectLabel({
+  className,
+  ...props
+}: React.ComponentProps<typeof SelectPrimitive.Label>) {
+  return (
+    <SelectPrimitive.Label
+      data-slot="select-label"
+      className={cn("px-2 py-1.5 text-sm font-medium", className)}
+      {...props}
+    />
+  )
+}
+
+function SelectItem({
+  className,
+  children,
+  ...props
+}: React.ComponentProps<typeof SelectPrimitive.Item>) {
+  return (
+    <SelectPrimitive.Item
+      data-slot="select-item"
+      className={cn(
+        "focus:bg-accent focus:text-accent-foreground [&_svg:not([class*='text-'])]:text-muted-foreground relative flex w-full cursor-default items-center gap-2 rounded-sm py-1.5 pr-8 pl-2 text-sm outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 *:[span]:last:flex *:[span]:last:items-center *:[span]:last:gap-2",
+        className
+      )}
+      {...props}
+    >
+      <span className="absolute right-2 flex size-3.5 items-center justify-center">
+        <SelectPrimitive.ItemIndicator>
+          <CheckIcon className="size-4" />
+        </SelectPrimitive.ItemIndicator>
+      </span>
+      <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
+    </SelectPrimitive.Item>
+  )
+}
+
+function SelectSeparator({
+  className,
+  ...props
+}: React.ComponentProps<typeof SelectPrimitive.Separator>) {
+  return (
+    <SelectPrimitive.Separator
+      data-slot="select-separator"
+      className={cn("bg-border pointer-events-none -mx-1 my-1 h-px", className)}
+      {...props}
+    />
+  )
+}
+
+function SelectScrollUpButton({
+  className,
+  ...props
+}: React.ComponentProps<typeof SelectPrimitive.ScrollUpButton>) {
+  return (
+    <SelectPrimitive.ScrollUpButton
+      data-slot="select-scroll-up-button"
+      className={cn(
+        "flex cursor-default items-center justify-center py-1",
+        className
+      )}
+      {...props}
+    >
+      <ChevronUpIcon className="size-4" />
+    </SelectPrimitive.ScrollUpButton>
+  )
+}
+
+function SelectScrollDownButton({
+  className,
+  ...props
+}: React.ComponentProps<typeof SelectPrimitive.ScrollDownButton>) {
+  return (
+    <SelectPrimitive.ScrollDownButton
+      data-slot="select-scroll-down-button"
+      className={cn(
+        "flex cursor-default items-center justify-center py-1",
+        className
+      )}
+      {...props}
+    >
+      <ChevronDownIcon className="size-4" />
+    </SelectPrimitive.ScrollDownButton>
+  )
+}
+
+export {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectScrollDownButton,
+  SelectScrollUpButton,
+  SelectSeparator,
+  SelectTrigger,
+  SelectValue,
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/dropdown-menu.tsx
+---BEGIN FILE CONTENTS---
+import * as React from "react"
+import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu"
+import { CheckIcon, ChevronRightIcon, CircleIcon } from "lucide-react"
+
+import { cn } from "@/lib/utils"
+
+function DropdownMenu({
+  ...props
+}: React.ComponentProps<typeof DropdownMenuPrimitive.Root>) {
+  return <DropdownMenuPrimitive.Root data-slot="dropdown-menu" {...props} />
+}
+
+function DropdownMenuPortal({
+  ...props
+}: React.ComponentProps<typeof DropdownMenuPrimitive.Portal>) {
+  return (
+    <DropdownMenuPrimitive.Portal data-slot="dropdown-menu-portal" {...props} />
+  )
+}
+
+function DropdownMenuTrigger({
+  ...props
+}: React.ComponentProps<typeof DropdownMenuPrimitive.Trigger>) {
+  return (
+    <DropdownMenuPrimitive.Trigger
+      data-slot="dropdown-menu-trigger"
+      {...props}
+    />
+  )
+}
+
+function DropdownMenuContent({
+  className,
+  sideOffset = 4,
+  ...props
+}: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
+  return (
+    <DropdownMenuPrimitive.Portal>
+      <DropdownMenuPrimitive.Content
+        data-slot="dropdown-menu-content"
+        sideOffset={sideOffset}
+        className={cn(
+          "bg-popover text-popover-foreground data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 min-w-[8rem] overflow-hidden rounded-md border p-1 shadow-md",
+          className
+        )}
+        {...props}
+      />
+    </DropdownMenuPrimitive.Portal>
+  )
+}
+
+function DropdownMenuGroup({
+  ...props
+}: React.ComponentProps<typeof DropdownMenuPrimitive.Group>) {
+  return (
+    <DropdownMenuPrimitive.Group data-slot="dropdown-menu-group" {...props} />
+  )
+}
+
+function DropdownMenuItem({
+  className,
+  inset,
+  variant = "default",
+  ...props
+}: React.ComponentProps<typeof DropdownMenuPrimitive.Item> & {
+  inset?: boolean
+  variant?: "default" | "destructive"
+}) {
+  return (
+    <DropdownMenuPrimitive.Item
+      data-slot="dropdown-menu-item"
+      data-inset={inset}
+      data-variant={variant}
+      className={cn(
+        "focus:bg-accent focus:text-accent-foreground data-[variant=destructive]:text-destructive-foreground data-[variant=destructive]:focus:bg-destructive/10 dark:data-[variant=destructive]:focus:bg-destructive/40 data-[variant=destructive]:focus:text-destructive-foreground data-[variant=destructive]:*:[svg]:!text-destructive-foreground [&_svg:not([class*='text-'])]:text-muted-foreground relative flex cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[inset]:pl-8 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function DropdownMenuCheckboxItem({
+  className,
+  children,
+  checked,
+  ...props
+}: React.ComponentProps<typeof DropdownMenuPrimitive.CheckboxItem>) {
+  return (
+    <DropdownMenuPrimitive.CheckboxItem
+      data-slot="dropdown-menu-checkbox-item"
+      className={cn(
+        "focus:bg-accent focus:text-accent-foreground relative flex cursor-default items-center gap-2 rounded-sm py-1.5 pr-2 pl-8 text-sm outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        className
+      )}
+      checked={checked}
+      {...props}
+    >
+      <span className="pointer-events-none absolute left-2 flex size-3.5 items-center justify-center">
+        <DropdownMenuPrimitive.ItemIndicator>
+          <CheckIcon className="size-4" />
+        </DropdownMenuPrimitive.ItemIndicator>
+      </span>
+      {children}
+    </DropdownMenuPrimitive.CheckboxItem>
+  )
+}
+
+function DropdownMenuRadioGroup({
+  ...props
+}: React.ComponentProps<typeof DropdownMenuPrimitive.RadioGroup>) {
+  return (
+    <DropdownMenuPrimitive.RadioGroup
+      data-slot="dropdown-menu-radio-group"
+      {...props}
+    />
+  )
+}
+
+function DropdownMenuRadioItem({
+  className,
+  children,
+  ...props
+}: React.ComponentProps<typeof DropdownMenuPrimitive.RadioItem>) {
+  return (
+    <DropdownMenuPrimitive.RadioItem
+      data-slot="dropdown-menu-radio-item"
+      className={cn(
+        "focus:bg-accent focus:text-accent-foreground relative flex cursor-default items-center gap-2 rounded-sm py-1.5 pr-2 pl-8 text-sm outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        className
+      )}
+      {...props}
+    >
+      <span className="pointer-events-none absolute left-2 flex size-3.5 items-center justify-center">
+        <DropdownMenuPrimitive.ItemIndicator>
+          <CircleIcon className="size-2 fill-current" />
+        </DropdownMenuPrimitive.ItemIndicator>
+      </span>
+      {children}
+    </DropdownMenuPrimitive.RadioItem>
+  )
+}
+
+function DropdownMenuLabel({
+  className,
+  inset,
+  ...props
+}: React.ComponentProps<typeof DropdownMenuPrimitive.Label> & {
+  inset?: boolean
+}) {
+  return (
+    <DropdownMenuPrimitive.Label
+      data-slot="dropdown-menu-label"
+      data-inset={inset}
+      className={cn(
+        "px-2 py-1.5 text-sm font-medium data-[inset]:pl-8",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function DropdownMenuSeparator({
+  className,
+  ...props
+}: React.ComponentProps<typeof DropdownMenuPrimitive.Separator>) {
+  return (
+    <DropdownMenuPrimitive.Separator
+      data-slot="dropdown-menu-separator"
+      className={cn("bg-border -mx-1 my-1 h-px", className)}
+      {...props}
+    />
+  )
+}
+
+function DropdownMenuShortcut({
+  className,
+  ...props
+}: React.ComponentProps<"span">) {
+  return (
+    <span
+      data-slot="dropdown-menu-shortcut"
+      className={cn(
+        "text-muted-foreground ml-auto text-xs tracking-widest",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function DropdownMenuSub({
+  ...props
+}: React.ComponentProps<typeof DropdownMenuPrimitive.Sub>) {
+  return <DropdownMenuPrimitive.Sub data-slot="dropdown-menu-sub" {...props} />
+}
+
+function DropdownMenuSubTrigger({
+  className,
+  inset,
+  children,
+  ...props
+}: React.ComponentProps<typeof DropdownMenuPrimitive.SubTrigger> & {
+  inset?: boolean
+}) {
+  return (
+    <DropdownMenuPrimitive.SubTrigger
+      data-slot="dropdown-menu-sub-trigger"
+      data-inset={inset}
+      className={cn(
+        "focus:bg-accent focus:text-accent-foreground data-[state=open]:bg-accent data-[state=open]:text-accent-foreground flex cursor-default items-center rounded-sm px-2 py-1.5 text-sm outline-hidden select-none data-[inset]:pl-8",
+        className
+      )}
+      {...props}
+    >
+      {children}
+      <ChevronRightIcon className="ml-auto size-4" />
+    </DropdownMenuPrimitive.SubTrigger>
+  )
+}
+
+function DropdownMenuSubContent({
+  className,
+  ...props
+}: React.ComponentProps<typeof DropdownMenuPrimitive.SubContent>) {
+  return (
+    <DropdownMenuPrimitive.SubContent
+      data-slot="dropdown-menu-sub-content"
+      className={cn(
+        "bg-popover text-popover-foreground data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 min-w-[8rem] overflow-hidden rounded-md border p-1 shadow-lg",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+export {
+  DropdownMenu,
+  DropdownMenuPortal,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuLabel,
+  DropdownMenuItem,
+  DropdownMenuCheckboxItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuShortcut,
+  DropdownMenuSub,
+  DropdownMenuSubTrigger,
+  DropdownMenuSubContent,
+}
+
+---END FILE CONTENTS---
+
+
 FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/app-logo-icon.tsx
 ---BEGIN FILE CONTENTS---
 import { SVGAttributes } from 'react';
@@ -2312,6 +5716,330 @@ export default ({ children, breadcrumbs, ...props }: AppLayoutProps) => (
 ---END FILE CONTENTS---
 
 
+FILE: /home/rick110/Downloads/110/madwanzi1/routes/console.php
+---BEGIN FILE CONTENTS---
+<?php
+
+use Illuminate\Foundation\Inspiring;
+use Illuminate\Support\Facades\Artisan;
+
+Artisan::command('inspire', function () {
+    $this->comment(Inspiring::quote());
+})->purpose('Display an inspiring quote');
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/routes/auth.php
+---BEGIN FILE CONTENTS---
+<?php
+
+use App\Http\Controllers\Auth\AuthenticatedSessionController;
+use App\Http\Controllers\Auth\ConfirmablePasswordController;
+use App\Http\Controllers\Auth\EmailVerificationNotificationController;
+use App\Http\Controllers\Auth\EmailVerificationPromptController;
+use App\Http\Controllers\Auth\NewPasswordController;
+use App\Http\Controllers\Auth\PasswordResetLinkController;
+use App\Http\Controllers\Auth\RegisteredUserController;
+use App\Http\Controllers\Auth\VerifyEmailController;
+use Illuminate\Support\Facades\Route;
+
+Route::middleware('guest')->group(function () {
+    Route::get('register', [RegisteredUserController::class, 'create'])
+        ->name('register');
+
+    Route::post('register', [RegisteredUserController::class, 'store']);
+
+    Route::get('login', [AuthenticatedSessionController::class, 'create'])
+        ->name('login');
+
+    Route::post('login', [AuthenticatedSessionController::class, 'store']);
+
+    Route::get('forgot-password', [PasswordResetLinkController::class, 'create'])
+        ->name('password.request');
+
+    Route::post('forgot-password', [PasswordResetLinkController::class, 'store'])
+        ->name('password.email');
+
+    Route::get('reset-password/{token}', [NewPasswordController::class, 'create'])
+        ->name('password.reset');
+
+    Route::post('reset-password', [NewPasswordController::class, 'store'])
+        ->name('password.store');
+});
+
+Route::middleware('auth')->group(function () {
+    Route::get('verify-email', EmailVerificationPromptController::class)
+        ->name('verification.notice');
+
+    Route::get('verify-email/{id}/{hash}', VerifyEmailController::class)
+        ->middleware(['signed', 'throttle:6,1'])
+        ->name('verification.verify');
+
+    Route::post('email/verification-notification', [EmailVerificationNotificationController::class, 'store'])
+        ->middleware('throttle:6,1')
+        ->name('verification.send');
+
+    Route::get('confirm-password', [ConfirmablePasswordController::class, 'show'])
+        ->name('password.confirm');
+
+    Route::post('confirm-password', [ConfirmablePasswordController::class, 'store']);
+
+    Route::post('logout', [AuthenticatedSessionController::class, 'destroy'])
+        ->name('logout');
+});
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/routes/settings.php
+---BEGIN FILE CONTENTS---
+<?php
+
+use App\Http\Controllers\Settings\PasswordController;
+use App\Http\Controllers\Settings\ProfileController;
+use Illuminate\Support\Facades\Route;
+use Inertia\Inertia;
+
+Route::middleware('auth')->group(function () {
+    Route::redirect('settings', 'settings/profile');
+
+    Route::get('settings/profile', [ProfileController::class, 'edit'])->name('profile.edit');
+    Route::patch('settings/profile', [ProfileController::class, 'update'])->name('profile.update');
+    Route::delete('settings/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');
+
+    Route::get('settings/password', [PasswordController::class, 'edit'])->name('password.edit');
+    Route::put('settings/password', [PasswordController::class, 'update'])->name('password.update');
+
+    Route::get('settings/appearance', function () {
+        return Inertia::render('settings/appearance');
+    })->name('appearance');
+});
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/routes/web.php
+---BEGIN FILE CONTENTS---
+<?php
+
+use Illuminate\Support\Facades\Route;
+use Inertia\Inertia;
+
+Route::get('/', function () {
+    return Inertia::render('welcome');
+})->name('home');
+
+Route::middleware(['auth', 'verified'])->group(function () {
+    Route::get('dashboard', function () {
+        return Inertia::render('dashboard');
+    })->name('dashboard');
+});
+
+require __DIR__.'/settings.php';
+require __DIR__.'/auth.php';
+require __DIR__.'/articles.php'; // Include the article routes
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/routes/articles.php
+---BEGIN FILE CONTENTS---
+<?php
+
+use App\Http\Controllers\ArticleController;
+use Illuminate\Support\Facades\Route;
+
+Route::middleware(['auth', 'verified'])->group(function () {
+   // Article management routes
+   Route::get('/articles', [ArticleController::class, 'index'])->name('articles.index');
+   Route::get('/articles/create', [ArticleController::class, 'create'])->name('articles.create');
+   Route::post('/articles', [ArticleController::class, 'store'])->name('articles.store');
+   Route::get('/articles/{uuid}/edit', [ArticleController::class, 'edit'])->name('articles.edit');
+   Route::delete('/articles/{uuid}', [ArticleController::class, 'destroy'])->name('articles.destroy');
+   
+   // Article title and content update routes (for autosave)
+   Route::patch('/articles/{uuid}/title', [ArticleController::class, 'updateTitle'])->name('articles.update.title');
+   Route::patch('/articles/{uuid}/content', [ArticleController::class, 'updateContent'])->name('articles.update.content');
+   
+   // Article preview and publish routes
+   Route::post('/articles/preview', [ArticleController::class, 'preview'])->name('articles.preview');
+   Route::post('/articles/{uuid}/publish', [ArticleController::class, 'publish'])->name('articles.publish');
+   
+   // Add schedule route for articles
+   Route::post('/articles/{uuid}/schedule', [ArticleController::class, 'schedule'])->name('articles.schedule');
+   
+   // Media upload route
+   Route::post('/articles/media', [ArticleController::class, 'uploadMedia'])->name('articles.media.upload');
+   
+   // Add this missing API route for fetching article media
+   Route::get('/api/articles/{uuid}/media', [ArticleController::class, 'getArticleMedia'])->name('api.articles.media');
+});
+
+// Public article routes
+Route::get('/articles/{slug}', [ArticleController::class, 'show'])->name('articles.show');
+Route::get('/preview/{token}', [ArticleController::class, 'showPreview'])->name('articles.preview.show');
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/database/migrations/2025_04_21_081309_create_articles_table.php
+---BEGIN FILE CONTENTS---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Run the migrations.
+     */
+    public function up(): void
+    {
+        Schema::create('articles', function (Blueprint $table) {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->foreignId('user_id')->constrained()->onDelete('cascade');
+            $table->string('title')->nullable();
+            $table->string('slug')->unique()->nullable();
+            $table->text('content')->nullable();
+            $table->enum('status', ['draft', 'scheduled', 'published'])->default('draft');
+            $table->timestamp('published_at')->nullable();
+            $table->timestamp('scheduled_at')->nullable(); // Added scheduled_at column
+            $table->json('seo_data')->nullable();
+            $table->integer('word_count')->default(0);
+            $table->integer('reading_time')->default(0);
+            $table->timestamps();
+        });
+        
+        Schema::create('article_versions', function (Blueprint $table) {
+            $table->id();
+            $table->foreignId('article_id')->constrained()->onDelete('cascade');
+            $table->text('content');
+            $table->string('version_name')->nullable();
+            $table->timestamps();
+        });
+        
+        Schema::create('media', function (Blueprint $table) {
+            $table->id();
+            $table->foreignId('user_id')->constrained()->onDelete('cascade');
+            $table->string('original_name');
+            $table->string('filename');
+            $table->string('mime_type');
+            $table->string('path');
+            $table->integer('size');
+            $table->json('metadata')->nullable();
+            $table->timestamps();
+        });
+        
+        Schema::create('article_media', function (Blueprint $table) {
+            $table->foreignId('article_id')->constrained()->onDelete('cascade');
+            $table->foreignId('media_id')->constrained()->onDelete('cascade');
+            $table->primary(['article_id', 'media_id']);
+            $table->timestamps();
+        });
+    }
+
+    /**
+     * Reverse the migrations.
+     */
+    public function down(): void
+    {
+        Schema::dropIfExists('article_media');
+        Schema::dropIfExists('media');
+        Schema::dropIfExists('article_versions');
+        Schema::dropIfExists('articles');
+    }
+};
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/app/Console/Kernel.php
+---BEGIN FILE CONTENTS---
+<?php
+
+namespace App\Console;
+
+use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Foundation\Console\Kernel as ConsoleKernel;
+
+class Kernel extends ConsoleKernel
+{
+    /**
+     * Define the application's command schedule.
+     */
+    protected function schedule(Schedule $schedule): void
+    {
+        // $schedule->command('inspire')->hourly();
+        
+        // Schedule the command to run every minute to check for articles to publish
+        $schedule->command('articles:publish-scheduled')->everyMinute();
+    }
+
+    /**
+     * Register the commands for the application.
+     */
+    protected function commands(): void
+    {
+        $this->load(__DIR__.'/Commands');
+
+        require base_path('routes/console.php');
+    }
+}
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/app/Console/Commands/PublishScheduledArticles.php
+---BEGIN FILE CONTENTS---
+<?php
+
+namespace App\Console\Commands;
+
+use App\Models\Article;
+use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Log;
+
+class PublishScheduledArticles extends Command
+{
+    protected $signature = 'articles:publish-scheduled';
+    protected $description = 'Publish articles that are scheduled for publication';
+
+    public function handle()
+    {
+        $articles = Article::where('status', 'scheduled')
+            ->where('scheduled_at', '<=', now())
+            ->get();
+
+        $count = 0;
+        foreach ($articles as $article) {
+            try {
+                $article->update([
+                    'status' => 'published',
+                    'published_at' => now(),
+                ]);
+                
+                // Create published version
+                $article->createVersionSnapshot('Published Version');
+                
+                $count++;
+                $this->info("Published scheduled article: {$article->title}");
+                Log::info("Published scheduled article", ['article_id' => $article->id]);
+            } catch (\Exception $e) {
+                $this->error("Failed to publish article ID {$article->id}: {$e->getMessage()}");
+                Log::error("Failed to publish scheduled article", [
+                    'article_id' => $article->id,
+                    'error' => $e->getMessage()
+                ]);
+            }
+        }
+
+        $this->info("Published {$count} scheduled articles");
+        return Command::SUCCESS;
+    }
+}
+---END FILE CONTENTS---
+
+
 FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/pages/articles/index.tsx
 ---BEGIN FILE CONTENTS---
 "use client"
@@ -2541,327 +6269,6 @@ export default function ArticlesIndex({ articles }) {
     </AppLayout>
   )
 }
----END FILE CONTENTS---
-
-
-FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/pages/articles/show.tsx
----BEGIN FILE CONTENTS---
-"use client"
-
-import { Head, Link } from "@inertiajs/react"
-import { ArrowLeft, Calendar, Clock, Share, Terminal, Eye, Link2, User } from "lucide-react"
-
-import AppLayout from "@/layouts/app-layout"
-import { Button } from "@/components/ui/button"
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { Separator } from "@/components/ui/separator"
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
-import { toast } from "@/components/ui/use-toast"
-import { Badge } from "@/components/ui/badge"
-import { ScrollArea } from "@/components/ui/scroll-area"
-
-export default function ArticleShow({ article, author }) {
-  const formattedDate = article.published_at
-    ? new Date(article.published_at).toLocaleDateString("en-US", {
-        year: "numeric",
-        month: "long",
-        day: "numeric",
-      })
-    : "Not yet published"
-
-  const handleShare = (platform) => {
-    const url = window.location.href
-    const title = article.title
-
-    let shareUrl
-
-    switch (platform) {
-      case "twitter":
-        shareUrl = `https://twitter.com/intent/tweet?url=${encodeURIComponent(url)}&text=${encodeURIComponent(title)}`
-        break
-      case "facebook":
-        shareUrl = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(url)}`
-        break
-      case "linkedin":
-        shareUrl = `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(url)}`
-        break
-      case "copy":
-        navigator.clipboard.writeText(url).then(() => {
-          toast({
-            title: "Link copied",
-            description: "Article link copied to clipboard",
-          })
-        })
-        return
-      default:
-        return
-    }
-
-    window.open(shareUrl, "_blank")
-  }
-
-  return (
-    <AppLayout>
-      <Head title={article.title || "Article"} />
-
-      <div className="container mx-auto max-w-4xl p-6 bg-black/5 dark:bg-black/20 min-h-screen">
-        <div className="mb-8 flex items-center justify-between">
-          <Button
-            variant="outline"
-            size="sm"
-            asChild
-            className="border-neutral-700 bg-black/20 hover:bg-black/40 text-neutral-300"
-          >
-            <Link href="/articles">
-              <ArrowLeft className="h-4 w-4 mr-1" />
-              Back to Articles
-            </Link>
-          </Button>
-
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="outline"
-                size="sm"
-                className="border-neutral-700 bg-black/20 hover:bg-black/40 text-neutral-300"
-              >
-                <Share className="h-4 w-4 mr-1" />
-                Share
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="bg-neutral-900 border-neutral-700">
-              <DropdownMenuItem onClick={() => handleShare("twitter")} className="cursor-pointer hover:bg-neutral-800">
-                Share on Twitter
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => handleShare("facebook")} className="cursor-pointer hover:bg-neutral-800">
-                Share on Facebook
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => handleShare("linkedin")} className="cursor-pointer hover:bg-neutral-800">
-                Share on LinkedIn
-              </DropdownMenuItem>
-              <Separator className="my-1 bg-neutral-700" />
-              <DropdownMenuItem onClick={() => handleShare("copy")} className="cursor-pointer hover:bg-neutral-800">
-                <Link2 className="h-4 w-4 mr-2" />
-                Copy link
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-
-        <article className="space-y-8">
-          <header className="space-y-4">
-            <div className="flex items-center space-x-2 mb-2">
-              <Terminal className="h-5 w-5 text-green-500" />
-              <span className="text-sm font-mono text-green-500">article.view</span>
-              <Badge className="bg-green-600 text-white hover:bg-green-700 ml-2">
-                <Eye className="h-3 w-3 mr-1" />
-                PUBLISHED
-              </Badge>
-            </div>
-
-            <h1 className="text-3xl font-bold md:text-4xl lg:text-5xl font-mono">{article.title}</h1>
-
-            <div className="flex flex-wrap items-center gap-4 text-neutral-500">
-              <div className="flex items-center space-x-2">
-                <Avatar className="h-10 w-10 border-2 border-green-500/30">
-                  <AvatarImage src={author.avatar || "/placeholder.svg"} alt={author.name} />
-                  <AvatarFallback className="bg-black text-green-500">
-                    {author.name
-                      .split(" ")
-                      .map((n) => n[0])
-                      .join("")}
-                  </AvatarFallback>
-                </Avatar>
-                <div>
-                  <span className="text-sm">{author.name}</span>
-                  <div className="text-xs text-green-500 font-mono">
-                    @{author.name.toLowerCase().replace(/\s/g, "")}
-                  </div>
-                </div>
-              </div>
-
-              <span className="h-4 border-l border-neutral-700 hidden sm:block"></span>
-
-              <div className="flex items-center">
-                <Calendar className="h-4 w-4 mr-1" />
-                <span className="text-sm">{formattedDate}</span>
-              </div>
-
-              <span className="h-4 border-l border-neutral-700 hidden sm:block"></span>
-
-              <div className="flex items-center">
-                <Clock className="h-4 w-4 mr-1" />
-                <span className="text-sm">{article.reading_time} min read</span>
-              </div>
-            </div>
-          </header>
-
-          <ScrollArea className="max-h-[70vh]">
-            <div className="prose prose-invert prose-green prose-headings:font-mono prose-headings:font-bold prose-h1:text-2xl prose-h2:text-xl prose-h3:text-lg prose-img:rounded-lg prose-code:text-green-500 prose-pre:bg-black/50 prose-pre:border prose-pre:border-green-900/50 max-w-none">
-              <div dangerouslySetInnerHTML={{ __html: article.content }} />
-            </div>
-          </ScrollArea>
-
-          <Separator className="my-8 bg-neutral-800" />
-
-          <div className="bg-black/30 border border-green-900/30 rounded-lg p-6">
-            <div className="flex items-center space-x-4">
-              <Avatar className="h-12 w-12 border-2 border-green-500/30">
-                <AvatarImage src={author.avatar || "/placeholder.svg"} alt={author.name} />
-                <AvatarFallback className="bg-black text-green-500">
-                  {author.name
-                    .split(" ")
-                    .map((n) => n[0])
-                    .join("")}
-                </AvatarFallback>
-              </Avatar>
-              <div>
-                <h3 className="text-lg font-medium font-mono flex items-center">
-                  <User className="h-4 w-4 mr-2 text-green-500" />
-                  <span className="text-green-500">author</span>: {author.name}
-                </h3>
-                <p className="text-neutral-500">
-                  <span className="text-green-500 font-mono">articles.count</span>:{" "}
-                  {author.articles_count || "multiple"}
-                </p>
-              </div>
-            </div>
-          </div>
-        </article>
-      </div>
-    </AppLayout>
-  )
-}
-
----END FILE CONTENTS---
-
-
-FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/pages/articles/preview.tsx
----BEGIN FILE CONTENTS---
-import { Head, Link } from "@inertiajs/react"
-import { ArrowLeft, Calendar, Clock, Edit, Terminal, Eye, Shield } from "lucide-react"
-
-import AppLayout from "@/layouts/app-layout"
-import { Button } from "@/components/ui/button"
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { Badge } from "@/components/ui/badge"
-import { ScrollArea } from "@/components/ui/scroll-area"
-
-export default function ArticlePreview({ article, author, isPreview = true }) {
-  const formattedDate = article.published_at
-    ? new Date(article.published_at).toLocaleDateString("en-US", {
-        year: "numeric",
-        month: "long",
-        day: "numeric",
-      })
-    : "Not yet published"
-
-  return (
-    <AppLayout>
-      <Head title={article.title || "Article Preview"} />
-
-      {isPreview && (
-        <div className="bg-amber-900/30 border-b border-amber-700/50 p-2 text-center">
-          <div className="flex items-center justify-center space-x-2">
-            <Shield className="h-4 w-4 text-amber-500" />
-            <span className="text-amber-500 font-mono">PREVIEW MODE ACTIVE</span>
-            <Button
-              variant="outline"
-              size="sm"
-              asChild
-              className="border-amber-700 bg-black/20 hover:bg-black/40 text-amber-400"
-            >
-              <Link href={`/articles/${article.uuid}/edit`}>
-                <Edit className="h-4 w-4 mr-1" />
-                Return to Editor
-              </Link>
-            </Button>
-          </div>
-        </div>
-      )}
-
-      <div className="container mx-auto max-w-4xl p-6 bg-black/5 dark:bg-black/20 min-h-screen">
-        <div className="mb-8">
-          <Button
-            variant="outline"
-            size="sm"
-            asChild
-            className="border-neutral-700 bg-black/20 hover:bg-black/40 text-neutral-300"
-          >
-            <Link href={isPreview ? `/articles/${article.uuid}/edit` : "/articles"}>
-              <ArrowLeft className="h-4 w-4 mr-1" />
-              {isPreview ? "Back to Editor" : "Back to Articles"}
-            </Link>
-          </Button>
-        </div>
-
-        <article className="space-y-8">
-          <header className="space-y-4">
-            <div className="flex items-center space-x-2 mb-2">
-              <Terminal className="h-5 w-5 text-green-500" />
-              <span className="text-sm font-mono text-green-500">article.view</span>
-              {isPreview && (
-                <Badge variant="outline" className="border-amber-500 text-amber-500 ml-2">
-                  <Eye className="h-3 w-3 mr-1" />
-                  PREVIEW
-                </Badge>
-              )}
-            </div>
-
-            <h1 className="text-3xl font-bold md:text-4xl lg:text-5xl font-mono">
-              {article.title || "Untitled Article"}
-            </h1>
-
-            <div className="flex flex-wrap items-center gap-4 text-neutral-500">
-              <div className="flex items-center space-x-2">
-                <Avatar className="h-10 w-10 border-2 border-green-500/30">
-                  <AvatarImage src={author.avatar || "/placeholder.svg"} alt={author.name} />
-                  <AvatarFallback className="bg-black text-green-500">
-                    {author.name
-                      .split(" ")
-                      .map((n) => n[0])
-                      .join("")}
-                  </AvatarFallback>
-                </Avatar>
-                <div>
-                  <span className="text-sm">{author.name}</span>
-                  <div className="text-xs text-green-500 font-mono">
-                    @{author.name.toLowerCase().replace(/\s/g, "")}
-                  </div>
-                </div>
-              </div>
-
-              <span className="h-4 border-l border-neutral-700 hidden sm:block"></span>
-
-              <div className="flex items-center">
-                <Calendar className="h-4 w-4 mr-1" />
-                <span className="text-sm">{formattedDate}</span>
-              </div>
-
-              <span className="h-4 border-l border-neutral-700 hidden sm:block"></span>
-
-              <div className="flex items-center">
-                <Clock className="h-4 w-4 mr-1" />
-                <span className="text-sm">{article.reading_time} min read</span>
-              </div>
-            </div>
-          </header>
-
-          <ScrollArea className="max-h-[70vh]">
-            <div className="prose prose-invert prose-green prose-headings:font-mono prose-headings:font-bold prose-h1:text-2xl prose-h2:text-xl prose-h3:text-lg prose-img:rounded-lg prose-code:text-green-500 prose-pre:bg-black/50 prose-pre:border prose-pre:border-green-900/50 max-w-none">
-              {article.content ? (
-                <div dangerouslySetInnerHTML={{ __html: article.content }} />
-              ) : (
-                <p className="text-neutral-500 italic font-mono">// No content yet</p>
-              )}
-            </div>
-          </ScrollArea>
-        </article>
-      </div>
-    </AppLayout>
-  )
-}
-
 ---END FILE CONTENTS---
 
 
@@ -3603,237 +7010,85 @@ export default function Editor({ article, isNewArticle }: EditorProps) {
 ---END FILE CONTENTS---
 
 
-FILE: /home/rick110/Downloads/110/madwanzi1/routes/console.php
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/ui/calendar.tsx
 ---BEGIN FILE CONTENTS---
-<?php
+"use client"
 
-use Illuminate\Foundation\Inspiring;
-use Illuminate\Support\Facades\Artisan;
+import * as React from "react"
+import { ChevronLeft, ChevronRight } from "lucide-react"
+import { DayPicker, type DayPickerProps } from "react-day-picker"
 
-Artisan::command('inspire', function () {
-    $this->comment(Inspiring::quote());
-})->purpose('Display an inspiring quote');
+import { cn } from "@/lib/utils"
+import { buttonVariants } from "@/components/ui/button"
 
----END FILE CONTENTS---
+export type CalendarProps = React.ComponentProps<typeof DayPicker>
 
+function Calendar({
+  className,
+  classNames,
+  showOutsideDays = true,
+  ...props
+}: CalendarProps) {
+  return (
+    <DayPicker
+      showOutsideDays={showOutsideDays}
+      className={cn("p-3", className)}
+      classNames={{
+        months: "flex flex-col sm:flex-row gap-2",
+        month: "flex flex-col gap-4",
+        caption: "flex justify-center pt-1 relative items-center w-full",
+        caption_label: "text-sm font-medium",
+        nav: "flex items-center gap-1",
+        nav_button: cn(
+          buttonVariants({ variant: "outline" }),
+          "size-7 bg-transparent p-0 opacity-50 hover:opacity-100"
+        ),
+        nav_button_previous: "absolute left-1",
+        nav_button_next: "absolute right-1",
+        table: "w-full border-collapse space-x-1",
+        head_row: "flex",
+        head_cell:
+          "text-muted-foreground rounded-md w-8 font-normal text-[0.8rem]",
+        row: "flex w-full mt-2",
+        cell: cn(
+          "relative p-0 text-center text-sm focus-within:relative focus-within:z-20 [&:has([aria-selected])]:bg-accent [&:has([aria-selected].day-range-end)]:rounded-r-md",
+          props.mode === "range"
+            ? "[&:has(>.day-range-end)]:rounded-r-md [&:has(>.day-range-start)]:rounded-l-md first:[&:has([aria-selected])]:rounded-l-md last:[&:has([aria-selected])]:rounded-r-md"
+            : "[&:has([aria-selected])]:rounded-md"
+        ),
+        day: cn(
+          buttonVariants({ variant: "ghost" }),
+          "size-8 p-0 font-normal aria-selected:opacity-100"
+        ),
+        day_range_start:
+          "day-range-start aria-selected:bg-primary aria-selected:text-primary-foreground",
+        day_range_end:
+          "day-range-end aria-selected:bg-primary aria-selected:text-primary-foreground",
+        day_selected:
+          "bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground focus:bg-primary focus:text-primary-foreground",
+        day_today: "bg-accent text-accent-foreground",
+        day_outside:
+          "day-outside text-muted-foreground aria-selected:text-muted-foreground",
+        day_disabled: "text-muted-foreground opacity-50",
+        day_range_middle:
+          "aria-selected:bg-accent aria-selected:text-accent-foreground",
+        day_hidden: "invisible",
+        ...classNames,
+      }}
+      components={{
+        IconLeft: ({ ...props }) => (
+          <ChevronLeft className="size-4" {...props} />
+        ),
+        IconRight: ({ ...props }) => (
+          <ChevronRight className="size-4" {...props} />
+        ),
+      }}
+      {...props}
+    />
+  )
+}
 
-FILE: /home/rick110/Downloads/110/madwanzi1/routes/auth.php
----BEGIN FILE CONTENTS---
-<?php
-
-use App\Http\Controllers\Auth\AuthenticatedSessionController;
-use App\Http\Controllers\Auth\ConfirmablePasswordController;
-use App\Http\Controllers\Auth\EmailVerificationNotificationController;
-use App\Http\Controllers\Auth\EmailVerificationPromptController;
-use App\Http\Controllers\Auth\NewPasswordController;
-use App\Http\Controllers\Auth\PasswordResetLinkController;
-use App\Http\Controllers\Auth\RegisteredUserController;
-use App\Http\Controllers\Auth\VerifyEmailController;
-use Illuminate\Support\Facades\Route;
-
-Route::middleware('guest')->group(function () {
-    Route::get('register', [RegisteredUserController::class, 'create'])
-        ->name('register');
-
-    Route::post('register', [RegisteredUserController::class, 'store']);
-
-    Route::get('login', [AuthenticatedSessionController::class, 'create'])
-        ->name('login');
-
-    Route::post('login', [AuthenticatedSessionController::class, 'store']);
-
-    Route::get('forgot-password', [PasswordResetLinkController::class, 'create'])
-        ->name('password.request');
-
-    Route::post('forgot-password', [PasswordResetLinkController::class, 'store'])
-        ->name('password.email');
-
-    Route::get('reset-password/{token}', [NewPasswordController::class, 'create'])
-        ->name('password.reset');
-
-    Route::post('reset-password', [NewPasswordController::class, 'store'])
-        ->name('password.store');
-});
-
-Route::middleware('auth')->group(function () {
-    Route::get('verify-email', EmailVerificationPromptController::class)
-        ->name('verification.notice');
-
-    Route::get('verify-email/{id}/{hash}', VerifyEmailController::class)
-        ->middleware(['signed', 'throttle:6,1'])
-        ->name('verification.verify');
-
-    Route::post('email/verification-notification', [EmailVerificationNotificationController::class, 'store'])
-        ->middleware('throttle:6,1')
-        ->name('verification.send');
-
-    Route::get('confirm-password', [ConfirmablePasswordController::class, 'show'])
-        ->name('password.confirm');
-
-    Route::post('confirm-password', [ConfirmablePasswordController::class, 'store']);
-
-    Route::post('logout', [AuthenticatedSessionController::class, 'destroy'])
-        ->name('logout');
-});
-
----END FILE CONTENTS---
-
-
-FILE: /home/rick110/Downloads/110/madwanzi1/routes/settings.php
----BEGIN FILE CONTENTS---
-<?php
-
-use App\Http\Controllers\Settings\PasswordController;
-use App\Http\Controllers\Settings\ProfileController;
-use Illuminate\Support\Facades\Route;
-use Inertia\Inertia;
-
-Route::middleware('auth')->group(function () {
-    Route::redirect('settings', 'settings/profile');
-
-    Route::get('settings/profile', [ProfileController::class, 'edit'])->name('profile.edit');
-    Route::patch('settings/profile', [ProfileController::class, 'update'])->name('profile.update');
-    Route::delete('settings/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');
-
-    Route::get('settings/password', [PasswordController::class, 'edit'])->name('password.edit');
-    Route::put('settings/password', [PasswordController::class, 'update'])->name('password.update');
-
-    Route::get('settings/appearance', function () {
-        return Inertia::render('settings/appearance');
-    })->name('appearance');
-});
-
----END FILE CONTENTS---
-
-
-FILE: /home/rick110/Downloads/110/madwanzi1/routes/web.php
----BEGIN FILE CONTENTS---
-<?php
-
-use Illuminate\Support\Facades\Route;
-use Inertia\Inertia;
-
-Route::get('/', function () {
-    return Inertia::render('welcome');
-})->name('home');
-
-Route::middleware(['auth', 'verified'])->group(function () {
-    Route::get('dashboard', function () {
-        return Inertia::render('dashboard');
-    })->name('dashboard');
-});
-
-require __DIR__.'/settings.php';
-require __DIR__.'/auth.php';
-require __DIR__.'/articles.php'; // Include the article routes
----END FILE CONTENTS---
-
-
-FILE: /home/rick110/Downloads/110/madwanzi1/routes/articles.php
----BEGIN FILE CONTENTS---
-<?php
-
-use App\Http\Controllers\ArticleController;
-use Illuminate\Support\Facades\Route;
-
-Route::middleware(['auth', 'verified'])->group(function () {
-    // Article management routes
-    Route::get('/articles', [ArticleController::class, 'index'])->name('articles.index');
-    Route::get('/articles/create', [ArticleController::class, 'create'])->name('articles.create');
-    Route::post('/articles', [ArticleController::class, 'store'])->name('articles.store');
-    Route::get('/articles/{uuid}/edit', [ArticleController::class, 'edit'])->name('articles.edit');
-    Route::delete('/articles/{uuid}', [ArticleController::class, 'destroy'])->name('articles.destroy');
-    
-    // Article title and content update routes (for autosave)
-    Route::patch('/articles/{uuid}/title', [ArticleController::class, 'updateTitle'])->name('articles.update.title');
-    Route::patch('/articles/{uuid}/content', [ArticleController::class, 'updateContent'])->name('articles.update.content');
-    
-    // Article preview and publish routes
-    Route::post('/articles/preview', [ArticleController::class, 'preview'])->name('articles.preview');
-    Route::post('/articles/{uuid}/publish', [ArticleController::class, 'publish'])->name('articles.publish');
-    
-    // Media upload route
-    Route::post('/articles/media', [ArticleController::class, 'uploadMedia'])->name('articles.media.upload');
-    
-    // Add this missing API route for fetching article media
-    Route::get('/api/articles/{uuid}/media', [ArticleController::class, 'getArticleMedia'])->name('api.articles.media');
-});
-
-// Public article routes
-Route::get('/articles/{slug}', [ArticleController::class, 'show'])->name('articles.show');
-Route::get('/preview/{token}', [ArticleController::class, 'showPreview'])->name('articles.preview.show');
----END FILE CONTENTS---
-
-
-FILE: /home/rick110/Downloads/110/madwanzi1/database/migrations/2025_04_21_081309_create_articles_table.php
----BEGIN FILE CONTENTS---
-<?php
-
-use Illuminate\Database\Migrations\Migration;
-use Illuminate\Database\Schema\Blueprint;
-use Illuminate\Support\Facades\Schema;
-
-return new class extends Migration
-{
-    /**
-     * Run the migrations.
-     */
-    public function up(): void
-    {
-        Schema::create('articles', function (Blueprint $table) {
-            $table->id();
-            $table->uuid('uuid')->unique();
-            $table->foreignId('user_id')->constrained()->onDelete('cascade');
-            $table->string('title')->nullable();
-            $table->string('slug')->unique()->nullable();
-            $table->text('content')->nullable();
-            $table->enum('status', ['draft', 'published'])->default('draft');
-            $table->timestamp('published_at')->nullable();
-            $table->json('seo_data')->nullable();
-            $table->integer('word_count')->default(0);
-            $table->integer('reading_time')->default(0);
-            $table->timestamps();
-        });
-        
-        Schema::create('article_versions', function (Blueprint $table) {
-            $table->id();
-            $table->foreignId('article_id')->constrained()->onDelete('cascade');
-            $table->text('content');
-            $table->string('version_name')->nullable();
-            $table->timestamps();
-        });
-        
-        Schema::create('media', function (Blueprint $table) {
-            $table->id();
-            $table->foreignId('user_id')->constrained()->onDelete('cascade');
-            $table->string('original_name');
-            $table->string('filename');
-            $table->string('mime_type');
-            $table->string('path');
-            $table->integer('size');
-            $table->json('metadata')->nullable();
-            $table->timestamps();
-        });
-        
-        Schema::create('article_media', function (Blueprint $table) {
-            $table->foreignId('article_id')->constrained()->onDelete('cascade');
-            $table->foreignId('media_id')->constrained()->onDelete('cascade');
-            $table->primary(['article_id', 'media_id']);
-            $table->timestamps();
-        });
-    }
-
-    /**
-     * Reverse the migrations.
-     */
-    public function down(): void
-    {
-        Schema::dropIfExists('article_media');
-        Schema::dropIfExists('media');
-        Schema::dropIfExists('article_versions');
-        Schema::dropIfExists('articles');
-    }
-};
+export { Calendar }
 ---END FILE CONTENTS---
 
 

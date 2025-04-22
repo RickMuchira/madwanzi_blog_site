@@ -1,7 +1,7 @@
 "use client"
 
 import { Head, Link, router } from "@inertiajs/react"
-import { Calendar, Clock, Edit, Plus, Trash, Terminal, Shield, Eye, FileCode, Lock, Search } from "lucide-react"
+import { Calendar, Clock, Edit, Plus, Trash, Terminal, Shield, Eye, FileCode, Lock, Search, CalendarDays, AlertCircle } from "lucide-react"
 import { Fragment, useState } from "react"
 
 import AppLayout from "@/layouts/app-layout"
@@ -45,6 +45,44 @@ export default function ArticlesIndex({ articles }) {
 
   const handleCreateArticle = () => {
     router.visit(route('articles.create'));
+  }
+
+  // Helper function to format date in a simple way
+  const formatDate = (dateString) => {
+    if (!dateString) return "";
+    
+    try {
+      const date = new Date(dateString);
+      return date.toLocaleString();
+    } catch (error) {
+      return dateString;
+    }
+  }
+
+  // Get badge for article status
+  const getStatusBadge = (article) => {
+    if (article.status === "published") {
+      return (
+        <Badge variant="default" className="bg-green-600 text-white hover:bg-green-700">
+          <Eye className="h-3 w-3 mr-1" />
+          LIVE
+        </Badge>
+      );
+    } else if (article.status === "scheduled") {
+      return (
+        <Badge variant="outline" className="border-blue-500 text-blue-500">
+          <CalendarDays className="h-3 w-3 mr-1" />
+          SCHEDULED
+        </Badge>
+      );
+    } else {
+      return (
+        <Badge variant="outline" className="border-amber-500 text-amber-500">
+          <Lock className="h-3 w-3 mr-1" />
+          DRAFT
+        </Badge>
+      );
+    }
   }
 
   return (
@@ -117,33 +155,22 @@ export default function ArticlesIndex({ articles }) {
                         {article.title || "Untitled Article"}
                       </Link>
                     </CardTitle>
-                    <Badge
-                      variant={article.status === "published" ? "default" : "outline"}
-                      className={
-                        article.status === "published"
-                          ? "bg-green-600 text-white hover:bg-green-700"
-                          : "border-amber-500 text-amber-500"
-                      }
-                    >
-                      {article.status === "published" ? (
-                        <Fragment>
-                          <Eye className="h-3 w-3 mr-1" />
-                          LIVE
-                        </Fragment>
-                      ) : (
-                        <Fragment>
-                          <Lock className="h-3 w-3 mr-1" />
-                          DRAFT
-                        </Fragment>
-                      )}
-                    </Badge>
+                    {getStatusBadge(article)}
                   </div>
                   <CardDescription className="flex items-center text-xs gap-1 text-neutral-500">
                     {article.status === "published" && (
                       <Fragment>
                         <span className="inline-flex items-center gap-1">
                           <Calendar className="h-3 w-3" />
-                          {new Date(article.published_at).toLocaleDateString()}
+                          Published: {formatDate(article.published_at)}
+                        </span>
+                      </Fragment>
+                    )}
+                    {article.status === "scheduled" && (
+                      <Fragment>
+                        <span className="inline-flex items-center gap-1">
+                          <CalendarDays className="h-3 w-3" />
+                          Scheduled for: {formatDate(article.scheduled_at)}
                         </span>
                       </Fragment>
                     )}

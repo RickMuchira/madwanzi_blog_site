@@ -1,0 +1,2696 @@
+FILE: /home/rick110/Downloads/110/madwanzi1/app/Http/Controllers/ArticleController.php
+---BEGIN FILE CONTENTS---
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Article;
+use App\Models\Media;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
+use Inertia\Inertia;
+
+class ArticleController extends Controller
+{
+   /**
+    * Display a listing of the articles.
+    */
+   public function index()
+   {
+       try {
+           $articles = Auth::user()->articles()
+               ->orderBy('updated_at', 'desc')
+               ->get();
+               
+           return Inertia::render('articles/index', [
+               'articles' => $articles,
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error fetching articles: ' . $e->getMessage());
+           return back()->with('error', 'Could not load articles.');
+       }
+   }
+
+   /**
+    * Show the form for creating a new article.
+    */
+   public function create()
+   {
+       try {
+           // Create a temporary slug for the draft article
+           $tempSlug = 'draft-' . Str::random(10);
+           
+           // Create a new draft article
+           $article = Auth::user()->articles()->create([
+               'title' => '',
+               'content' => '',
+               'status' => 'draft',
+               'uuid' => Str::uuid(),
+               'slug' => $tempSlug, // Add temporary slug
+           ]);
+           
+           Log::info('Created new article', ['article_id' => $article->id, 'uuid' => $article->uuid]);
+           
+           return Inertia::render('articles/editor', [
+               'article' => $article,
+               'isNewArticle' => true,
+           ]);
+       } catch (\Exception $e) {
+           // Log the error
+           Log::error('Failed to create article: ' . $e->getMessage(), [
+               'exception' => $e,
+               'user_id' => Auth::id()
+           ]);
+           
+           // Return error response
+           return back()->with('error', 'Failed to create article. Please try again.');
+       }
+   }
+
+   /**
+    * Store a newly created article in storage.
+    */
+   public function store(Request $request)
+   {
+       try {
+           Log::info('Article store attempt', ['data' => $request->all()]);
+           
+           $validated = $request->validate([
+               'uuid' => 'required|string|exists:articles,uuid',
+               'title' => 'nullable|string|max:255',
+               'content' => 'nullable|string',
+           ]);
+           
+           $article = Article::where('uuid', $validated['uuid'])
+               ->where('user_id', Auth::id())
+               ->first();
+               
+           if (!$article) {
+               Log::warning('Article not found during save', ['uuid' => $validated['uuid'], 'user_id' => Auth::id()]);
+               return response()->json(['error' => 'Article not found'], 404);
+           }
+           
+           // Update the article with new data
+           $article->update([
+               'title' => $validated['title'] ?? $article->title,
+               'content' => $validated['content'] ?? $article->content,
+           ]);
+           
+           // If title is updated, update the slug too (for draft articles)
+           if (isset($validated['title']) && $article->status === 'draft') {
+               $this->updateArticleSlug($article, $validated['title']);
+           }
+           
+           $article->updateWordStats();
+           
+           // Create a version snapshot
+           $article->createVersionSnapshot();
+           
+           Log::info('Article saved successfully', ['article_id' => $article->id, 'uuid' => $article->uuid]);
+           
+           return back()->with('success', 'Article saved successfully');
+       } catch (\Exception $e) {
+           Log::error('Error saving article: ' . $e->getMessage(), [
+               'exception' => $e,
+               'request_data' => $request->all()
+           ]);
+           
+           return response()->json(['error' => 'Failed to save article: ' . $e->getMessage()], 500);
+       }
+   }
+
+   /**
+    * Update the article title.
+    */
+   public function updateTitle(Request $request)
+   {
+       try {
+           Log::info('Title update attempt', ['data' => $request->all()]);
+           
+           $validated = $request->validate([
+               'uuid' => 'required|string|exists:articles,uuid',
+               'title' => 'required|string|max:255',
+           ]);
+           
+           $article = Article::where('uuid', $validated['uuid'])
+               ->where('user_id', Auth::id())
+               ->first();
+               
+           if (!$article) {
+               Log::warning('Article not found during title update', ['uuid' => $validated['uuid'], 'user_id' => Auth::id()]);
+               return response()->json(['error' => 'Article not found'], 404);
+           }
+           
+           // Update the article title
+           $article->update([
+               'title' => $validated['title'],
+           ]);
+           
+           // Update the slug if the article is a draft
+           if ($article->status === 'draft') {
+               $this->updateArticleSlug($article, $validated['title']);
+           }
+           
+           Log::info('Article title updated successfully', ['article_id' => $article->id, 'uuid' => $article->uuid]);
+           
+           return response()->json([
+               'success' => true,
+               'slug' => $article->slug,
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error updating article title: ' . $e->getMessage(), [
+               'exception' => $e,
+               'request_data' => $request->all()
+           ]);
+           
+           return response()->json(['error' => 'Failed to update title: ' . $e->getMessage()], 500);
+       }
+   }
+
+   /**
+    * Helper method to update an article's slug based on title
+    */
+   private function updateArticleSlug(Article $article, string $title)
+   {
+       if (empty($title)) {
+           // Keep existing slug if title is empty
+           return;
+       }
+       
+       // Generate base slug from title
+       $baseSlug = Str::slug($title);
+       
+       // If the slug is empty (e.g., title has only special characters),
+       // use a fallback
+       if (empty($baseSlug)) {
+           $baseSlug = 'article';
+       }
+       
+       $slug = $baseSlug;
+       $counter = 1;
+       
+       // Check for slug uniqueness
+       while (Article::where('slug', $slug)
+               ->where('id', '!=', $article->id)
+               ->exists()) {
+           $slug = $baseSlug . '-' . $counter;
+           $counter++;
+       }
+       
+       // Update the article with the new slug
+       $article->update(['slug' => $slug]);
+       
+       return $slug;
+   }
+
+   /**
+    * Update the article content.
+    */
+   public function updateContent(Request $request)
+   {
+       try {
+           Log::info('Content update attempt', ['uuid' => $request->uuid]);
+           
+           $validated = $request->validate([
+               'uuid' => 'required|string|exists:articles,uuid',
+               'content' => 'nullable|string',
+           ]);
+           
+           $article = Article::where('uuid', $validated['uuid'])
+               ->where('user_id', Auth::id())
+               ->first();
+               
+           if (!$article) {
+               Log::warning('Article not found during content update', ['uuid' => $validated['uuid'], 'user_id' => Auth::id()]);
+               return response()->json(['error' => 'Article not found'], 404);
+           }
+               
+           $article->update([
+               'content' => $validated['content'],
+           ]);
+           
+           $article->updateWordStats();
+           
+           Log::info('Article content updated successfully', ['article_id' => $article->id, 'uuid' => $article->uuid]);
+           
+           return response()->json([
+               'success' => true,
+               'word_count' => $article->word_count,
+               'reading_time' => $article->reading_time,
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error updating article content: ' . $e->getMessage(), [
+               'exception' => $e,
+               'request_data' => ['uuid' => $request->uuid]
+           ]);
+           
+           return response()->json(['error' => 'Failed to update content: ' . $e->getMessage()], 500);
+       }
+   }
+
+   /**
+    * Display the specified article for editing.
+    */
+   public function edit(string $uuid)
+   {
+       try {
+           $article = Article::where('uuid', $uuid)
+               ->where('user_id', Auth::id())
+               ->firstOrFail();
+               
+           return Inertia::render('articles/editor', [
+               'article' => $article,
+               'isNewArticle' => false,
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error loading article for edit: ' . $e->getMessage(), [
+               'exception' => $e,
+               'uuid' => $uuid,
+               'user_id' => Auth::id()
+           ]);
+           
+           return redirect()->route('articles.index')->with('error', 'Article not found or access denied.');
+       }
+   }
+
+   /**
+    * Generate a preview link for the article.
+    */
+   public function preview(Request $request)
+   {
+       try {
+           $validated = $request->validate([
+               'uuid' => 'required|string|exists:articles,uuid',
+           ]);
+           
+           $article = Article::where('uuid', $validated['uuid'])
+               ->where('user_id', Auth::id())
+               ->firstOrFail();
+               
+           // Generate a temporary token for preview access
+           $previewToken = Str::random(32);
+           
+           // Store the token in cache with an expiration
+           cache()->put('preview_' . $previewToken, $article->uuid, now()->addHours(24));
+           
+           $previewUrl = route('articles.preview.show', ['token' => $previewToken]);
+           
+           return response()->json([
+               'preview_url' => $previewUrl,
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error generating preview: ' . $e->getMessage(), [
+               'exception' => $e,
+               'request_data' => $request->all()
+           ]);
+           
+           return response()->json(['error' => 'Failed to generate preview link'], 500);
+       }
+   }
+
+   /**
+    * Show the preview of an article.
+    */
+   public function showPreview(string $token)
+   {
+       try {
+           $articleUuid = cache()->get('preview_' . $token);
+           
+           if (!$articleUuid) {
+               abort(404);
+           }
+           
+           $article = Article::where('uuid', $articleUuid)->firstOrFail();
+           
+           return Inertia::render('articles/preview', [
+               'article' => $article,
+               'author' => $article->author,
+               'isPreview' => true,
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error showing preview: ' . $e->getMessage(), [
+               'exception' => $e,
+               'token' => $token
+           ]);
+           
+           return redirect()->route('dashboard')->with('error', 'Preview not available or has expired.');
+       }
+   }
+
+   /**
+    * Schedule an article for future publication.
+    */
+   public function schedule(Request $request)
+   {
+       try {
+           $validated = $request->validate([
+               'uuid' => 'required|string|exists:articles,uuid',
+               'scheduled_at' => 'required|date|after:now',
+           ]);
+           
+           $article = Article::where('uuid', $validated['uuid'])
+               ->where('user_id', Auth::id())
+               ->firstOrFail();
+               
+           if (empty($article->title) || empty($article->content)) {
+               return response()->json([
+                   'success' => false,
+                   'message' => 'Article must have a title and content to be scheduled.',
+               ], 422);
+           }
+           
+           // Ensure the slug is based on the title before scheduling
+           $this->updateArticleSlug($article, $article->title);
+           
+           $article->update([
+               'status' => 'scheduled',
+               'scheduled_at' => $validated['scheduled_at'],
+           ]);
+           
+           // Create a version snapshot on scheduling
+           $article->createVersionSnapshot('Scheduled Version');
+           
+           return response()->json([
+               'success' => true,
+               'message' => 'Article scheduled for publication on ' . $validated['scheduled_at'],
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error scheduling article: ' . $e->getMessage(), [
+               'exception' => $e,
+               'request_data' => $request->all()
+           ]);
+           
+           return response()->json(['error' => 'Failed to schedule article'], 500);
+       }
+   }
+
+   /**
+    * Publish the article.
+    */
+   public function publish(Request $request)
+   {
+       try {
+           $validated = $request->validate([
+               'uuid' => 'required|string|exists:articles,uuid',
+           ]);
+           
+           $article = Article::where('uuid', $validated['uuid'])
+               ->where('user_id', Auth::id())
+               ->firstOrFail();
+               
+           if (empty($article->title) || empty($article->content)) {
+               return response()->json([
+                   'success' => false,
+                   'message' => 'Article must have a title and content to be published.',
+               ], 422);
+           }
+           
+           // Ensure the slug is based on the title before publishing
+           $this->updateArticleSlug($article, $article->title);
+           
+           $article->update([
+               'status' => 'published',
+               'published_at' => now(),
+           ]);
+           
+           // Create a version snapshot on publish
+           $article->createVersionSnapshot('Published Version');
+           
+           return response()->json([
+               'success' => true,
+               'article_url' => route('articles.show', $article->slug),
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error publishing article: ' . $e->getMessage(), [
+               'exception' => $e,
+               'request_data' => $request->all()
+           ]);
+           
+           return response()->json(['error' => 'Failed to publish article'], 500);
+       }
+   }
+
+   /**
+    * Display the published article.
+    */
+   public function show(string $slug)
+   {
+       try {
+           $article = Article::where('slug', $slug)
+               ->published()
+               ->firstOrFail();
+               
+           return Inertia::render('articles/show', [
+               'article' => $article,
+               'author' => $article->author,
+               'isPreview' => false,
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error showing article: ' . $e->getMessage(), [
+               'exception' => $e,
+               'slug' => $slug
+           ]);
+           
+           return redirect()->route('dashboard')->with('error', 'Article not found.');
+       }
+   }
+
+   /**
+    * Upload media for the article.
+    */
+   public function uploadMedia(Request $request)
+   {
+       try {
+           $request->validate([
+               'file' => 'required|file|max:10240|mimes:jpeg,png,jpg,gif,svg',
+               'article_uuid' => 'required|string|exists:articles,uuid',
+           ]);
+           
+           $article = Article::where('uuid', $request->article_uuid)
+               ->where('user_id', Auth::id())
+               ->firstOrFail();
+               
+           $file = $request->file('file');
+           $filename = Str::uuid() . '.' . $file->getClientOriginalExtension();
+           $path = $file->storeAs('media', $filename, 'public');
+           
+           // Create media record
+           $media = Media::create([
+               'user_id' => Auth::id(),
+               'original_name' => $file->getClientOriginalName(),
+               'filename' => $filename,
+               'mime_type' => $file->getMimeType(),
+               'path' => $path,
+               'size' => $file->getSize(),
+               'metadata' => [
+                   'width' => getimagesize($file->path())[0] ?? null,
+                   'height' => getimagesize($file->path())[1] ?? null,
+               ],
+           ]);
+           
+           // Attach media to article
+           $article->media()->attach($media->id);
+           
+           return response()->json([
+               'success' => true,
+               'media' => [
+                   'id' => $media->id,
+                   'url' => $media->url,
+                   'filename' => $media->original_name,
+                   'mime_type' => $media->mime_type,
+               ],
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error uploading media: ' . $e->getMessage(), [
+               'exception' => $e,
+               'request_data' => $request->all()
+           ]);
+           
+           return response()->json(['error' => 'Failed to upload media: ' . $e->getMessage()], 500);
+       }
+   }
+
+   /**
+    * Get media for an article.
+    */
+   public function getArticleMedia(string $uuid)
+   {
+       try {
+           $article = Article::where('uuid', $uuid)
+               ->where('user_id', Auth::id())
+               ->firstOrFail();
+               
+           $media = $article->media()->get()->map(function ($item) {
+               return [
+                   'id' => $item->id,
+                   'url' => $item->url,
+                   'filename' => $item->original_name,
+                   'mime_type' => $item->mime_type,
+               ];
+           });
+           
+           return response()->json([
+               'success' => true,
+               'media' => $media,
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error fetching article media: ' . $e->getMessage(), [
+               'exception' => $e,
+               'uuid' => $uuid
+           ]);
+           
+           return response()->json(['error' => 'Failed to fetch media'], 500);
+       }
+   }
+
+   /**
+    * Remove the specified article from storage.
+    */
+   public function destroy(string $uuid)
+   {
+       try {
+           $article = Article::where('uuid', $uuid)
+               ->where('user_id', Auth::id())
+               ->firstOrFail();
+               
+           // Delete article versions
+           $article->versions()->delete();
+           
+           // Detach media (but don't delete them)
+           $article->media()->detach();
+           
+           // Delete the article
+           $article->delete();
+           
+           return redirect()->route('articles.index')->with('success', 'Article deleted successfully');
+       } catch (\Exception $e) {
+           Log::error('Error deleting article: ' . $e->getMessage(), [
+               'exception' => $e,
+               'uuid' => $uuid,
+               'user_id' => Auth::id()
+           ]);
+           
+           return redirect()->route('articles.index')->with('error', 'Failed to delete article.');
+       }
+   }
+}
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/app/Models/Article.php
+---BEGIN FILE CONTENTS---
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Str;
+
+class Article extends Model
+{
+   use HasFactory;
+
+   /**
+    * The attributes that are mass assignable.
+    *
+    * @var array<int, string>
+    */
+   protected $fillable = [
+       'uuid',
+       'user_id',
+       'title',
+       'slug',
+       'content',
+       'status',
+       'published_at',
+       'scheduled_at',
+       'seo_data',
+       'word_count',
+       'reading_time',
+   ];
+
+   /**
+    * The attributes that should be cast.
+    *
+    * @var array<string, string>
+    */
+   protected $casts = [
+       'published_at' => 'datetime',
+       'scheduled_at' => 'datetime',
+       'seo_data' => 'array', // Changed from 'json' for better compatibility
+   ];
+
+   /**
+    * Boot the model.
+    */
+   protected static function boot()
+   {
+       parent::boot();
+
+       static::creating(function ($article) {
+           $article->uuid = $article->uuid ?? (string) Str::uuid();
+           
+           if (empty($article->slug) && !empty($article->title)) {
+               $article->slug = Str::slug($article->title);
+           }
+       });
+       
+       static::updating(function ($article) {
+           // Only update the slug if title changed and the slug hasn't been manually set
+           if ($article->isDirty('title') && !$article->isDirty('slug') && !empty($article->title)) {
+               $article->slug = Str::slug($article->title);
+           }
+       });
+   }
+
+   /**
+    * Get the user that owns the article.
+    */
+   public function author(): BelongsTo
+   {
+       return $this->belongsTo(User::class, 'user_id');
+   }
+
+   /**
+    * Get the article versions.
+    */
+   public function versions(): HasMany
+   {
+       return $this->hasMany(ArticleVersion::class);
+   }
+
+   /**
+    * Get the media attached to the article.
+    */
+   public function media(): BelongsToMany
+   {
+       return $this->belongsToMany(Media::class, 'article_media')
+           ->withTimestamps();
+   }
+
+   /**
+    * Create a version snapshot of the current content.
+    */
+   public function createVersionSnapshot(string $versionName = null): ?ArticleVersion
+   {
+       try {
+           return $this->versions()->create([
+               'content' => $this->content ?? '',
+               'version_name' => $versionName ?? 'Snapshot ' . ($this->versions()->count() + 1),
+           ]);
+       } catch (\Exception $e) {
+           \Log::error('Error creating version snapshot: ' . $e->getMessage(), [
+               'article_id' => $this->id,
+               'exception' => $e
+           ]);
+           return null;
+       }
+   }
+
+   /**
+    * Calculate and update the word count and reading time.
+    */
+   public function updateWordStats(): self
+   {
+       try {
+           // If content is null, set default values
+           if (empty($this->content)) {
+               $this->word_count = 0;
+               $this->reading_time = 0;
+               $this->save();
+               return $this;
+           }
+           
+           // Safely strip tags and count words
+           $plainText = strip_tags($this->content ?? '');
+           $this->word_count = str_word_count($plainText);
+           
+           // Calculate reading time (average reading speed is about 200 words per minute)
+           // Minimum 1 minute reading time
+           $this->reading_time = max(1, ceil($this->word_count / 200));
+           
+           $this->save();
+           
+           return $this;
+       } catch (\Exception $e) {
+           \Log::error('Error updating word stats: ' . $e->getMessage(), [
+               'article_id' => $this->id,
+               'exception' => $e
+           ]);
+           
+           // Don't let this failure prevent saving
+           return $this;
+       }
+   }
+
+   /**
+    * Scope a query to only include published articles.
+    */
+   public function scopePublished($query)
+   {
+       return $query->where('status', 'published')
+           ->whereNotNull('published_at')
+           ->where('published_at', '<=', now());
+   }
+
+   /**
+    * Scope a query to only include draft articles.
+    */
+   public function scopeDraft($query)
+   {
+       return $query->where('status', 'draft');
+   }
+   
+   /**
+    * Scope a query to only include scheduled articles.
+    */
+   public function scopeScheduled($query)
+   {
+       return $query->where('status', 'scheduled')
+           ->whereNotNull('scheduled_at');
+   }
+}
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/app/Models/Media.php
+---BEGIN FILE CONTENTS---
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+
+class Media extends Model
+{
+    use HasFactory;
+
+    /**
+     * The attributes that are mass assignable.
+     *
+     * @var array<int, string>
+     */
+    protected $fillable = [
+        'user_id',
+        'original_name',
+        'filename',
+        'mime_type',
+        'path',
+        'size',
+        'metadata',
+    ];
+
+    /**
+     * The attributes that should be cast.
+     *
+     * @var array<string, string>
+     */
+    protected $casts = [
+        'metadata' => 'array', // Changed from 'json' for better compatibility
+    ];
+
+    /**
+     * The accessors to append to the model's array form.
+     *
+     * @var array
+     */
+    protected $appends = [
+        'url',
+    ];
+
+    /**
+     * Get the user that owns the media.
+     */
+    public function user(): BelongsTo
+    {
+        return $this->belongsTo(User::class);
+    }
+
+    /**
+     * Get the articles that use this media.
+     */
+    public function articles(): BelongsToMany
+    {
+        return $this->belongsToMany(Article::class, 'article_media')
+            ->withTimestamps();
+    }
+
+    /**
+     * Get the full URL to the media file.
+     */
+    public function getUrlAttribute(): string
+    {
+        return asset('storage/' . $this->path);
+    }
+}
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/app/Models/User.php
+---BEGIN FILE CONTENTS---
+<?php
+
+namespace App\Models;
+
+// use Illuminate\Contracts\Auth\MustVerifyEmail;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Notifications\Notifiable;
+
+class User extends Authenticatable
+{
+    /** @use HasFactory<\Database\Factories\UserFactory> */
+    use HasFactory, Notifiable;
+
+    /**
+     * The attributes that are mass assignable.
+     *
+     * @var list<string>
+     */
+    protected $fillable = [
+        'name',
+        'email',
+        'password',
+    ];
+
+    /**
+     * The attributes that should be hidden for serialization.
+     *
+     * @var list<string>
+     */
+    protected $hidden = [
+        'password',
+        'remember_token',
+    ];
+
+    /**
+     * Get the attributes that should be cast.
+     *
+     * @return array<string, string>
+     */
+    protected function casts(): array
+    {
+        return [
+            'email_verified_at' => 'datetime',
+            'password' => 'hashed',
+        ];
+    }
+    
+    /**
+     * Get the articles authored by the user.
+     */
+    public function articles(): HasMany
+    {
+        return $this->hasMany(Article::class);
+    }
+    
+    /**
+     * Get the media uploaded by the user.
+     */
+    public function media(): HasMany
+    {
+        return $this->hasMany(Media::class);
+    }
+}
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/app/Models/ArticleVersion.php
+---BEGIN FILE CONTENTS---
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+
+class ArticleVersion extends Model
+{
+    use HasFactory;
+
+    /**
+     * The attributes that are mass assignable.
+     *
+     * @var array<int, string>
+     */
+    protected $fillable = [
+        'article_id',
+        'content',
+        'version_name',
+    ];
+
+    /**
+     * Get the article that owns the version.
+     */
+    public function article(): BelongsTo
+    {
+        return $this->belongsTo(Article::class);
+    }
+}
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/css/app.css
+---BEGIN FILE CONTENTS---
+@import "tailwindcss";
+
+@plugin 'tailwindcss-animate';
+
+@source '../views';
+@source '../../vendor/laravel/framework/src/Illuminate/Pagination/resources/views/*.blade.php';
+
+@custom-variant dark (&:is(.dark *));
+
+@theme {
+  --font-sans: "Fira Code", "JetBrains Mono", "Menlo", "Monaco", "Consolas", monospace;
+
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+/*
+  The default border color has changed to `currentColor` in Tailwind CSS v4,
+  so we've added these compatibility styles to make sure everything still
+  looks the same as it did with Tailwind CSS v3.
+
+  If we ever want to remove these styles, we need to add an explicit border
+  color utility to any element that depends on these defaults.
+*/
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentColor);
+  }
+}
+
+/* Hacker theme - Light mode (we'll make it dark by default) */
+:root {
+  /* Dark theme colors in light mode for consistency */
+  --background: oklch(0.03 0 0); /* Near black background */
+  --foreground: oklch(0.98 0 0); /* Near white text */
+  --card: oklch(0.05 0 0); /* Slightly lighter black for cards */
+  --card-foreground: oklch(0.98 0 0);
+  --popover: oklch(0.05 0 0);
+  --popover-foreground: oklch(0.98 0 0);
+  --primary: oklch(0.67 0.2 142); /* Green primary color */
+  --primary-foreground: oklch(0.98 0 0);
+  --secondary: oklch(0.16 0 0); /* Dark gray for secondary elements */
+  --secondary-foreground: oklch(0.98 0 0);
+  --muted: oklch(0.16 0 0);
+  --muted-foreground: oklch(0.65 0 0);
+  --accent: oklch(0.67 0.2 142); /* Green accent matching primary */
+  --accent-foreground: oklch(0.98 0 0);
+  --destructive: oklch(0.65 0.3 25); /* Red for destructive actions */
+  --destructive-foreground: oklch(0.98 0 0);
+  --border: oklch(0.16 0 0);
+  --input: oklch(0.16 0 0);
+  --ring: oklch(0.67 0.2 142);
+  --chart-1: oklch(0.67 0.2 142); /* Green */
+  --chart-2: oklch(0.6 0.2 200); /* Cyan */
+  --chart-3: oklch(0.65 0.3 25); /* Red */
+  --chart-4: oklch(0.7 0.2 70); /* Yellow */
+  --chart-5: oklch(0.6 0.2 280); /* Purple */
+  --radius: 0.5rem;
+  --sidebar: oklch(0.05 0 0);
+  --sidebar-foreground: oklch(0.98 0 0);
+  --sidebar-primary: oklch(0.67 0.2 142);
+  --sidebar-primary-foreground: oklch(0.98 0 0);
+  --sidebar-accent: oklch(0.16 0 0);
+  --sidebar-accent-foreground: oklch(0.98 0 0);
+  --sidebar-border: oklch(0.16 0 0);
+  --sidebar-ring: oklch(0.67 0.2 142);
+}
+
+/* Hacker theme - Dark mode (already dark by default) */
+.dark {
+  --background: oklch(0.03 0 0);
+  --foreground: oklch(0.98 0 0);
+  --card: oklch(0.05 0 0);
+  --card-foreground: oklch(0.98 0 0);
+  --popover: oklch(0.05 0 0);
+  --popover-foreground: oklch(0.98 0 0);
+  --primary: oklch(0.67 0.2 142); /* Green */
+  --primary-foreground: oklch(0.98 0 0);
+  --secondary: oklch(0.16 0 0);
+  --secondary-foreground: oklch(0.98 0 0);
+  --muted: oklch(0.16 0 0);
+  --muted-foreground: oklch(0.65 0 0);
+  --accent: oklch(0.67 0.2 142);
+  --accent-foreground: oklch(0.98 0 0);
+  --destructive: oklch(0.65 0.3 25);
+  --destructive-foreground: oklch(0.98 0 0);
+  --border: oklch(0.16 0 0);
+  --input: oklch(0.16 0 0);
+  --ring: oklch(0.67 0.2 142);
+  --chart-1: oklch(0.67 0.2 142); /* Green */
+  --chart-2: oklch(0.6 0.2 200); /* Cyan */
+  --chart-3: oklch(0.65 0.3 25); /* Red */
+  --chart-4: oklch(0.7 0.2 70); /* Yellow */
+  --chart-5: oklch(0.6 0.2 280); /* Purple */
+  --sidebar: oklch(0.05 0 0);
+  --sidebar-foreground: oklch(0.98 0 0);
+  --sidebar-primary: oklch(0.67 0.2 142);
+  --sidebar-primary-foreground: oklch(0.98 0 0);
+  --sidebar-accent: oklch(0.16 0 0);
+  --sidebar-accent-foreground: oklch(0.98 0 0);
+  --sidebar-border: oklch(0.16 0 0);
+  --sidebar-ring: oklch(0.67 0.2 142);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: "Fira Code", "JetBrains Mono", monospace;
+  }
+
+  /* Fix button interactions */
+  button,
+  a {
+    @apply cursor-pointer;
+    pointer-events: auto !important;
+  }
+
+  /* Ensure links inside buttons work properly */
+  button a {
+    @apply block w-full h-full;
+  }
+}
+
+/* Terminal-like typewriter effect */
+.typewriter {
+  overflow: hidden;
+  border-right: 2px solid oklch(0.67 0.2 142); /* Green cursor */
+  white-space: nowrap;
+  animation: typing 3.5s steps(40, end), blink-caret .75s step-end infinite;
+}
+
+@keyframes typing {
+  from {
+    width: 0;
+  }
+  to {
+    width: 100%;
+  }
+}
+
+@keyframes blink-caret {
+  from,
+  to {
+    border-color: transparent;
+  }
+  50% {
+    border-color: oklch(0.67 0.2 142); /* Green cursor */
+  }
+}
+
+/* Code syntax highlighting */
+pre {
+  background-color: rgba(0, 0, 0, 0.5) !important;
+  border: 1px solid rgba(16, 185, 129, 0.2) !important;
+  border-radius: 0.375rem;
+  padding: 1rem;
+  overflow-x: auto;
+}
+
+code {
+  font-family: "Fira Code", monospace;
+  color: oklch(0.67 0.2 142) !important; /* Green code text */
+}
+
+/* Terminal-like scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.2);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(16, 185, 129, 0.5);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(16, 185, 129, 0.7);
+}
+
+/* Fix for button interactions */
+.btn,
+.button,
+button,
+[role="button"] {
+  position: relative;
+  z-index: 10;
+}
+
+/* Ensure links are clickable */
+a,
+button,
+[role="button"],
+.clickable {
+  cursor: pointer;
+  pointer-events: auto !important;
+}
+
+/* Debug helper - uncomment to see clickable areas 
+a:hover, button:hover, [role="button"]:hover {
+    outline: 2px solid red !important;
+    background-color: rgba(255,0,0,0.1) !important;
+}
+*/
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/nav-footer.tsx
+---BEGIN FILE CONTENTS---
+import { Icon } from '@/components/icon';
+import { SidebarGroup, SidebarGroupContent, SidebarMenu, SidebarMenuButton, SidebarMenuItem } from '@/components/ui/sidebar';
+import { type NavItem } from '@/types';
+import { type ComponentPropsWithoutRef } from 'react';
+
+export function NavFooter({
+    items,
+    className,
+    ...props
+}: ComponentPropsWithoutRef<typeof SidebarGroup> & {
+    items: NavItem[];
+}) {
+    return (
+        <SidebarGroup {...props} className={`group-data-[collapsible=icon]:p-0 ${className || ''}`}>
+            <SidebarGroupContent>
+                <SidebarMenu>
+                    {items.map((item) => (
+                        <SidebarMenuItem key={item.title}>
+                            <SidebarMenuButton
+                                asChild
+                                className="text-neutral-600 hover:text-neutral-800 dark:text-neutral-300 dark:hover:text-neutral-100"
+                            >
+                                <a href={item.href} target="_blank" rel="noopener noreferrer">
+                                    {item.icon && <Icon iconNode={item.icon} className="h-5 w-5" />}
+                                    <span>{item.title}</span>
+                                </a>
+                            </SidebarMenuButton>
+                        </SidebarMenuItem>
+                    ))}
+                </SidebarMenu>
+            </SidebarGroupContent>
+        </SidebarGroup>
+    );
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/icon.tsx
+---BEGIN FILE CONTENTS---
+import { cn } from '@/lib/utils';
+import { type LucideProps } from 'lucide-react';
+import { type ComponentType } from 'react';
+
+interface IconProps extends Omit<LucideProps, 'ref'> {
+    iconNode: ComponentType<LucideProps>;
+}
+
+export function Icon({ iconNode: IconComponent, className, ...props }: IconProps) {
+    return <IconComponent className={cn('h-4 w-4', className)} {...props} />;
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/app-content.tsx
+---BEGIN FILE CONTENTS---
+import { SidebarInset } from '@/components/ui/sidebar';
+import * as React from 'react';
+
+interface AppContentProps extends React.ComponentProps<'main'> {
+    variant?: 'header' | 'sidebar';
+}
+
+export function AppContent({ variant = 'header', children, ...props }: AppContentProps) {
+    if (variant === 'sidebar') {
+        return <SidebarInset {...props}>{children}</SidebarInset>;
+    }
+
+    return (
+        <main className="mx-auto flex h-full w-full max-w-7xl flex-1 flex-col gap-4 rounded-xl" {...props}>
+            {children}
+        </main>
+    );
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/user-menu-content.tsx
+---BEGIN FILE CONTENTS---
+import { DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator } from '@/components/ui/dropdown-menu';
+import { UserInfo } from '@/components/user-info';
+import { useMobileNavigation } from '@/hooks/use-mobile-navigation';
+import { type User } from '@/types';
+import { Link } from '@inertiajs/react';
+import { LogOut, Settings } from 'lucide-react';
+
+interface UserMenuContentProps {
+    user: User;
+}
+
+export function UserMenuContent({ user }: UserMenuContentProps) {
+    const cleanup = useMobileNavigation();
+
+    return (
+        <>
+            <DropdownMenuLabel className="p-0 font-normal">
+                <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
+                    <UserInfo user={user} showEmail={true} />
+                </div>
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuGroup>
+                <DropdownMenuItem asChild>
+                    <Link className="block w-full" href={route('profile.edit')} as="button" prefetch onClick={cleanup}>
+                        <Settings className="mr-2" />
+                        Settings
+                    </Link>
+                </DropdownMenuItem>
+            </DropdownMenuGroup>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem asChild>
+                <Link className="block w-full" method="post" href={route('logout')} as="button" onClick={cleanup}>
+                    <LogOut className="mr-2" />
+                    Log out
+                </Link>
+            </DropdownMenuItem>
+        </>
+    );
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/nav-user.tsx
+---BEGIN FILE CONTENTS---
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar } from '@/components/ui/sidebar';
+import { UserInfo } from '@/components/user-info';
+import { UserMenuContent } from '@/components/user-menu-content';
+import { useIsMobile } from '@/hooks/use-mobile';
+import { type SharedData } from '@/types';
+import { usePage } from '@inertiajs/react';
+import { ChevronsUpDown } from 'lucide-react';
+
+export function NavUser() {
+    const { auth } = usePage<SharedData>().props;
+    const { state } = useSidebar();
+    const isMobile = useIsMobile();
+
+    return (
+        <SidebarMenu>
+            <SidebarMenuItem>
+                <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                        <SidebarMenuButton size="lg" className="text-sidebar-accent-foreground data-[state=open]:bg-sidebar-accent group">
+                            <UserInfo user={auth.user} />
+                            <ChevronsUpDown className="ml-auto size-4" />
+                        </SidebarMenuButton>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent
+                        className="w-(--radix-dropdown-menu-trigger-width) min-w-56 rounded-lg"
+                        align="end"
+                        side={isMobile ? 'bottom' : state === 'collapsed' ? 'left' : 'bottom'}
+                    >
+                        <UserMenuContent user={auth.user} />
+                    </DropdownMenuContent>
+                </DropdownMenu>
+            </SidebarMenuItem>
+        </SidebarMenu>
+    );
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/nav-main.tsx
+---BEGIN FILE CONTENTS---
+import { SidebarGroup, SidebarGroupLabel, SidebarMenu, SidebarMenuButton, SidebarMenuItem } from '@/components/ui/sidebar';
+import { type NavItem } from '@/types';
+import { Link, usePage } from '@inertiajs/react';
+
+export function NavMain({ items = [] }: { items: NavItem[] }) {
+    const page = usePage();
+    return (
+        <SidebarGroup className="px-2 py-0">
+            <SidebarGroupLabel>Platform</SidebarGroupLabel>
+            <SidebarMenu>
+                {items.map((item) => (
+                    <SidebarMenuItem key={item.title}>
+                        <SidebarMenuButton  
+                            asChild isActive={item.href === page.url}
+                            tooltip={{ children: item.title }}
+                        >
+                            <Link href={item.href} prefetch>
+                                {item.icon && <item.icon />}
+                                <span>{item.title}</span>
+                            </Link>
+                        </SidebarMenuButton>
+                    </SidebarMenuItem>
+                ))}
+            </SidebarMenu>
+        </SidebarGroup>
+    );
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/input-error.tsx
+---BEGIN FILE CONTENTS---
+import { cn } from '@/lib/utils';
+import { type HTMLAttributes } from 'react';
+
+export default function InputError({ message, className = '', ...props }: HTMLAttributes<HTMLParagraphElement> & { message?: string }) {
+    return message ? (
+        <p {...props} className={cn('text-sm text-red-600 dark:text-red-400', className)}>
+            {message}
+        </p>
+    ) : null;
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/appearance-dropdown.tsx
+---BEGIN FILE CONTENTS---
+import { Button } from '@/components/ui/button';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { useAppearance } from '@/hooks/use-appearance';
+import { Monitor, Moon, Sun } from 'lucide-react';
+import { HTMLAttributes } from 'react';
+
+export default function AppearanceToggleDropdown({ className = '', ...props }: HTMLAttributes<HTMLDivElement>) {
+    const { appearance, updateAppearance } = useAppearance();
+
+    const getCurrentIcon = () => {
+        switch (appearance) {
+            case 'dark':
+                return <Moon className="h-5 w-5" />;
+            case 'light':
+                return <Sun className="h-5 w-5" />;
+            default:
+                return <Monitor className="h-5 w-5" />;
+        }
+    };
+
+    return (
+        <div className={className} {...props}>
+            <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="icon" className="h-9 w-9 rounded-md">
+                        {getCurrentIcon()}
+                        <span className="sr-only">Toggle theme</span>
+                    </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                    <DropdownMenuItem onClick={() => updateAppearance('light')}>
+                        <span className="flex items-center gap-2">
+                            <Sun className="h-5 w-5" />
+                            Light
+                        </span>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => updateAppearance('dark')}>
+                        <span className="flex items-center gap-2">
+                            <Moon className="h-5 w-5" />
+                            Dark
+                        </span>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => updateAppearance('system')}>
+                        <span className="flex items-center gap-2">
+                            <Monitor className="h-5 w-5" />
+                            System
+                        </span>
+                    </DropdownMenuItem>
+                </DropdownMenuContent>
+            </DropdownMenu>
+        </div>
+    );
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/heading.tsx
+---BEGIN FILE CONTENTS---
+export default function Heading({ title, description }: { title: string; description?: string }) {
+    return (
+        <div className="mb-8 space-y-0.5">
+            <h2 className="text-xl font-semibold tracking-tight">{title}</h2>
+            {description && <p className="text-muted-foreground text-sm">{description}</p>}
+        </div>
+    );
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/app-sidebar.tsx
+---BEGIN FILE CONTENTS---
+import { NavFooter } from '@/components/nav-footer';
+import { NavMain } from '@/components/nav-main';
+import { NavUser } from '@/components/nav-user';
+import { Sidebar, SidebarContent, SidebarFooter, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem } from '@/components/ui/sidebar';
+import { type NavItem } from '@/types';
+import { Link } from '@inertiajs/react';
+import { BookOpen, Folder, LayoutGrid } from 'lucide-react';
+import AppLogo from './app-logo';
+
+const mainNavItems: NavItem[] = [
+    {
+        title: 'Dashboard',
+        href: '/dashboard',
+        icon: LayoutGrid,
+    },
+];
+
+const footerNavItems: NavItem[] = [
+    {
+        title: 'Repository',
+        href: 'https://github.com/laravel/react-starter-kit',
+        icon: Folder,
+    },
+    {
+        title: 'Documentation',
+        href: 'https://laravel.com/docs/starter-kits',
+        icon: BookOpen,
+    },
+];
+
+export function AppSidebar() {
+    return (
+        <Sidebar collapsible="icon" variant="floating">
+            <SidebarHeader>
+                <SidebarMenu>
+                    <SidebarMenuItem>
+                        <SidebarMenuButton size="lg" asChild>
+                            <Link href="/dashboard" prefetch>
+                                <AppLogo />
+                            </Link>
+                        </SidebarMenuButton>
+                    </SidebarMenuItem>
+                </SidebarMenu>
+            </SidebarHeader>
+
+            <SidebarContent>
+                <NavMain items={mainNavItems} />
+            </SidebarContent>
+
+            <SidebarFooter>
+                <NavFooter items={footerNavItems} className="mt-auto" />
+                <NavUser />
+            </SidebarFooter>
+        </Sidebar>
+    );
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/app-header.tsx
+---BEGIN FILE CONTENTS---
+"use client"
+
+import { Breadcrumbs } from "@/components/breadcrumbs"
+import { Icon } from "@/components/icon"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { Button } from "@/components/ui/button"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import {
+  NavigationMenu,
+  NavigationMenuItem,
+  NavigationMenuList,
+  navigationMenuTriggerStyle,
+} from "@/components/ui/navigation-menu"
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
+import { useInitials } from "@/hooks/use-initials"
+import { cn } from "@/lib/utils"
+import type { BreadcrumbItem, NavItem, SharedData } from "@/types"
+import { Link, usePage } from "@inertiajs/react"
+import {
+  BookOpen,
+  Folder,
+  LayoutGrid,
+  Menu,
+  Plus,
+  Search,
+  Terminal,
+  FileCode,
+  Code,
+  Shield,
+  Users,
+  Settings,
+  Moon,
+  Sun,
+  Zap,
+} from "lucide-react"
+import { useState } from "react"
+
+const mainNavItems: NavItem[] = [
+  {
+    title: "Dashboard",
+    href: "/dashboard",
+    icon: LayoutGrid,
+  },
+  {
+    title: "Articles",
+    href: "/articles",
+    icon: FileCode,
+  },
+  {
+    title: "Exploits",
+    href: "/exploits",
+    icon: Code,
+  },
+  {
+    title: "Security",
+    href: "/security",
+    icon: Shield,
+  },
+  {
+    title: "Community",
+    href: "/community",
+    icon: Users,
+  },
+]
+
+const rightNavItems: NavItem[] = [
+  {
+    title: "Repository",
+    href: "https://github.com/laravel/react-starter-kit",
+    icon: Folder,
+  },
+  {
+    title: "Documentation",
+    href: "https://laravel.com/docs/starter-kits",
+    icon: BookOpen,
+  },
+]
+
+const activeItemStyles = "text-green-500 bg-black/30 dark:bg-black/50"
+
+interface AppHeaderProps {
+  breadcrumbs?: BreadcrumbItem[]
+}
+
+export function AppHeader({ breadcrumbs = [] }: AppHeaderProps) {
+  const page = usePage<SharedData>()
+  const { auth } = page.props
+  const getInitials = useInitials()
+  const [darkMode, setDarkMode] = useState(true)
+
+  const toggleDarkMode = () => {
+    // This is a placeholder - in a real app, you'd implement actual dark mode toggling
+    setDarkMode(!darkMode)
+    document.documentElement.classList.toggle("dark")
+  }
+
+  return (
+    <>
+      <div className="border-neutral-800/50 border-b bg-black/20 dark:bg-black/40">
+        <div className="mx-auto flex h-16 items-center px-4 md:max-w-7xl">
+          {/* Terminal icon and blinking cursor for hacker aesthetic */}
+          <div className="flex items-center">
+            <Terminal className="h-5 w-5 text-green-500 mr-2" />
+            <span className="h-4 w-1 bg-green-500 animate-pulse hidden sm:inline-block"></span>
+          </div>
+
+          {/* Mobile Menu */}
+          <div className="lg:hidden ml-2">
+            <Sheet>
+              <SheetTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="mr-2 h-[34px] w-[34px] text-neutral-400 hover:text-green-500 hover:bg-black/30"
+                >
+                  <Menu className="h-5 w-5" />
+                </Button>
+              </SheetTrigger>
+              <SheetContent
+                side="left"
+                className="bg-neutral-900 border-neutral-800 flex h-full w-64 flex-col items-stretch justify-between"
+              >
+                <SheetTitle className="sr-only">Navigation Menu</SheetTitle>
+                <SheetHeader className="flex justify-start text-left">
+                  <div className="flex items-center">
+                    <Terminal className="h-5 w-5 text-green-500 mr-2" />
+                    <span className="font-mono text-green-500">HackersBlog</span>
+                  </div>
+                </SheetHeader>
+                <div className="flex h-full flex-1 flex-col space-y-4 p-4">
+                  <div className="flex h-full flex-col justify-between text-sm">
+                    <div className="flex flex-col space-y-4">
+                      {mainNavItems.map((item) => (
+                        <Link
+                          key={item.title}
+                          href={item.href}
+                          className={cn(
+                            "flex items-center space-x-2 font-mono p-2 rounded-md",
+                            page.url === item.href
+                              ? "bg-black/30 text-green-500"
+                              : "text-neutral-400 hover:text-green-500 hover:bg-black/20",
+                          )}
+                        >
+                          {item.icon && <Icon iconNode={item.icon} className="h-5 w-5" />}
+                          <span>{item.title}</span>
+                        </Link>
+                      ))}
+
+                      {/* Create Article link in mobile menu */}
+                      <Link
+                        href="/articles/create"
+                        className="flex items-center space-x-2 font-mono mt-4 p-2 rounded-md bg-green-600 text-white hover:bg-green-700"
+                      >
+                        <Icon iconNode={Plus} className="h-5 w-5" />
+                        <span>Create New Article</span>
+                      </Link>
+                    </div>
+
+                    <div className="flex flex-col space-y-4 mt-8 pt-4 border-t border-neutral-800">
+                      {rightNavItems.map((item) => (
+                        <a
+                          key={item.title}
+                          href={item.href}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center space-x-2 font-mono text-neutral-400 hover:text-green-500"
+                        >
+                          {item.icon && <Icon iconNode={item.icon} className="h-5 w-5" />}
+                          <span>{item.title}</span>
+                        </a>
+                      ))}
+
+                      {/* Dark mode toggle in mobile menu */}
+                      <button
+                        onClick={toggleDarkMode}
+                        className="flex items-center space-x-2 font-mono text-neutral-400 hover:text-green-500"
+                      >
+                        <Icon iconNode={darkMode ? Sun : Moon} className="h-5 w-5" />
+                        <span>{darkMode ? "Light Mode" : "Dark Mode"}</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </SheetContent>
+            </Sheet>
+          </div>
+
+          <Link href="/dashboard" prefetch className="flex items-center space-x-2 ml-4 lg:ml-0">
+            <div className="flex items-center">
+              <span className="font-mono text-green-500 text-lg hidden sm:inline-block">HackersBlog</span>
+              <span className="font-mono text-green-500 text-lg sm:hidden">HB</span>
+              <span className="text-green-500 animate-pulse ml-1">_</span>
+            </div>
+          </Link>
+
+          {/* Desktop Navigation */}
+          <div className="ml-6 hidden h-full items-center space-x-2 lg:flex">
+            <NavigationMenu className="flex h-full items-stretch">
+              <NavigationMenuList className="flex h-full items-stretch space-x-1">
+                {mainNavItems.map((item, index) => (
+                  <NavigationMenuItem key={index} className="relative flex h-full items-center">
+                    <Link
+                      href={item.href}
+                      className={cn(
+                        navigationMenuTriggerStyle(),
+                        page.url === item.href && activeItemStyles,
+                        "h-9 cursor-pointer px-3 font-mono text-neutral-400 hover:text-green-500 hover:bg-black/30",
+                      )}
+                    >
+                      {item.icon && <Icon iconNode={item.icon} className="mr-2 h-4 w-4" />}
+                      {item.title}
+                    </Link>
+                    {page.url === item.href && (
+                      <div className="absolute bottom-0 left-0 h-0.5 w-full translate-y-px bg-green-500"></div>
+                    )}
+                  </NavigationMenuItem>
+                ))}
+              </NavigationMenuList>
+            </NavigationMenu>
+          </div>
+
+          <div className="ml-auto flex items-center space-x-2">
+            {/* Create New Article Button */}
+            <Button
+              variant="default"
+              asChild
+              className="hidden lg:flex items-center space-x-1 bg-green-600 hover:bg-green-700 text-white"
+            >
+              <Link href="/articles/create" className="flex items-center space-x-1">
+                <Plus className="h-4 w-4" />
+                <span className="font-mono">New Article</span>
+              </Link>
+            </Button>
+
+            <div className="relative flex items-center space-x-1">
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="group h-9 w-9 cursor-pointer text-neutral-400 hover:text-green-500 hover:bg-black/30"
+                    >
+                      <Search className="h-5 w-5" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p className="font-mono text-xs">Search</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+
+              {/* Dark mode toggle */}
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={toggleDarkMode}
+                      className="group h-9 w-9 cursor-pointer text-neutral-400 hover:text-green-500 hover:bg-black/30"
+                    >
+                      {darkMode ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p className="font-mono text-xs">{darkMode ? "Light Mode" : "Dark Mode"}</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+
+              <div className="hidden lg:flex">
+                {rightNavItems.map((item) => (
+                  <TooltipProvider key={item.title} delayDuration={0}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <a
+                          href={item.href}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="ml-1 inline-flex h-9 w-9 items-center justify-center rounded-md bg-transparent p-0 text-neutral-400 hover:text-green-500 hover:bg-black/30 transition-colors"
+                        >
+                          <span className="sr-only">{item.title}</span>
+                          {item.icon && <Icon iconNode={item.icon} className="h-5 w-5" />}
+                        </a>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p className="font-mono text-xs">{item.title}</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                ))}
+              </div>
+            </div>
+
+            {/* User menu */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" className="size-10 rounded-full p-1 hover:bg-black/30">
+                  <Avatar className="size-8 overflow-hidden rounded-full border-2 border-green-500/30">
+                    <AvatarImage src={auth.user.avatar || "/placeholder.svg"} alt={auth.user.name} />
+                    <AvatarFallback className="bg-black text-green-500 font-mono">
+                      {getInitials(auth.user.name)}
+                    </AvatarFallback>
+                  </Avatar>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent className="w-56 bg-neutral-900 border-neutral-800" align="end">
+                <div className="flex items-center justify-start p-2 border-b border-neutral-800">
+                  <Avatar className="h-8 w-8 mr-2 border border-green-500/30">
+                    <AvatarImage src={auth.user.avatar || "/placeholder.svg"} alt={auth.user.name} />
+                    <AvatarFallback className="bg-black text-green-500 font-mono">
+                      {getInitials(auth.user.name)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div>
+                    <p className="text-sm font-medium">{auth.user.name}</p>
+                    <p className="text-xs text-neutral-500 font-mono">
+                      @{auth.user.name.toLowerCase().replace(/\s/g, "")}
+                    </p>
+                  </div>
+                </div>
+
+                <DropdownMenuItem className="cursor-pointer hover:bg-black/30 hover:text-green-500">
+                  <FileCode className="mr-2 h-4 w-4" />
+                  <span className="font-mono">My Articles</span>
+                </DropdownMenuItem>
+
+                <DropdownMenuItem className="cursor-pointer hover:bg-black/30 hover:text-green-500">
+                  <Settings className="mr-2 h-4 w-4" />
+                  <span className="font-mono">Settings</span>
+                </DropdownMenuItem>
+
+                <DropdownMenuSeparator className="bg-neutral-800" />
+
+                <DropdownMenuItem className="cursor-pointer hover:bg-black/30 hover:text-red-500">
+                  <Zap className="mr-2 h-4 w-4" />
+                  <span className="font-mono">Logout</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+      </div>
+      {breadcrumbs.length > 1 && (
+        <div className="border-neutral-800/50 flex w-full border-b bg-black/10 dark:bg-black/30">
+          <div className="mx-auto flex h-12 w-full items-center justify-start px-4 text-neutral-500 md:max-w-7xl">
+            <div className="flex items-center">
+              <Code className="h-4 w-4 text-green-500 mr-2" />
+              <span className="font-mono text-xs text-green-500 mr-2">path:</span>
+            </div>
+            <Breadcrumbs breadcrumbs={breadcrumbs} />
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/app-shell.tsx
+---BEGIN FILE CONTENTS---
+import { SidebarProvider } from '@/components/ui/sidebar';
+import { SharedData } from '@/types';
+import { usePage } from '@inertiajs/react';
+
+interface AppShellProps {
+    children: React.ReactNode;
+    variant?: 'header' | 'sidebar';
+}
+
+export function AppShell({ children, variant = 'header' }: AppShellProps) {
+    const isOpen = usePage<SharedData>().props.sidebarOpen;
+
+    if (variant === 'header') {
+        return <div className="flex min-h-screen w-full flex-col">{children}</div>;
+    }
+
+    return <SidebarProvider defaultOpen={isOpen}>{children}</SidebarProvider>;
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/user-info.tsx
+---BEGIN FILE CONTENTS---
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { useInitials } from '@/hooks/use-initials';
+import { type User } from '@/types';
+
+export function UserInfo({ user, showEmail = false }: { user: User; showEmail?: boolean }) {
+    const getInitials = useInitials();
+
+    return (
+        <>
+            <Avatar className="h-8 w-8 overflow-hidden rounded-full">
+                <AvatarImage src={user.avatar} alt={user.name} />
+                <AvatarFallback className="rounded-lg bg-neutral-200 text-black dark:bg-neutral-700 dark:text-white">
+                    {getInitials(user.name)}
+                </AvatarFallback>
+            </Avatar>
+            <div className="grid flex-1 text-left text-sm leading-tight">
+                <span className="truncate font-medium">{user.name}</span>
+                {showEmail && <span className="text-muted-foreground truncate text-xs">{user.email}</span>}
+            </div>
+        </>
+    );
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/text-link.tsx
+---BEGIN FILE CONTENTS---
+import { cn } from '@/lib/utils';
+import { Link } from '@inertiajs/react';
+import { ComponentProps } from 'react';
+
+type LinkProps = ComponentProps<typeof Link>;
+
+export default function TextLink({ className = '', children, ...props }: LinkProps) {
+    return (
+        <Link
+            className={cn(
+                'text-foreground underline decoration-neutral-300 underline-offset-4 transition-colors duration-300 ease-out hover:decoration-current! dark:decoration-neutral-500',
+                className,
+            )}
+            {...props}
+        >
+            {children}
+        </Link>
+    );
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/appearance-tabs.tsx
+---BEGIN FILE CONTENTS---
+import { Appearance, useAppearance } from '@/hooks/use-appearance';
+import { cn } from '@/lib/utils';
+import { LucideIcon, Monitor, Moon, Sun } from 'lucide-react';
+import { HTMLAttributes } from 'react';
+
+export default function AppearanceToggleTab({ className = '', ...props }: HTMLAttributes<HTMLDivElement>) {
+    const { appearance, updateAppearance } = useAppearance();
+
+    const tabs: { value: Appearance; icon: LucideIcon; label: string }[] = [
+        { value: 'light', icon: Sun, label: 'Light' },
+        { value: 'dark', icon: Moon, label: 'Dark' },
+        { value: 'system', icon: Monitor, label: 'System' },
+    ];
+
+    return (
+        <div className={cn('inline-flex gap-1 rounded-lg bg-neutral-100 p-1 dark:bg-neutral-800', className)} {...props}>
+            {tabs.map(({ value, icon: Icon, label }) => (
+                <button
+                    key={value}
+                    onClick={() => updateAppearance(value)}
+                    className={cn(
+                        'flex items-center rounded-md px-3.5 py-1.5 transition-colors',
+                        appearance === value
+                            ? 'bg-white shadow-xs dark:bg-neutral-700 dark:text-neutral-100'
+                            : 'text-neutral-500 hover:bg-neutral-200/60 hover:text-black dark:text-neutral-400 dark:hover:bg-neutral-700/60',
+                    )}
+                >
+                    <Icon className="-ml-1 h-4 w-4" />
+                    <span className="ml-1.5 text-sm">{label}</span>
+                </button>
+            ))}
+        </div>
+    );
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/app-logo.tsx
+---BEGIN FILE CONTENTS---
+import AppLogoIcon from './app-logo-icon';
+
+export default function AppLogo() {
+    return (
+        <>
+            <div className="bg-sidebar-primary text-sidebar-primary-foreground flex aspect-square size-8 items-center justify-center rounded-md">
+                <AppLogoIcon className="size-5 fill-current text-white dark:text-black" />
+            </div>
+            <div className="ml-1 grid flex-1 text-left text-sm">
+                <span className="mb-0.5 truncate leading-none font-semibold">Laravel Starter Kit</span>
+            </div>
+        </>
+    );
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/breadcrumbs.tsx
+---BEGIN FILE CONTENTS---
+import { Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from '@/components/ui/breadcrumb';
+import { type BreadcrumbItem as BreadcrumbItemType } from '@/types';
+import { Link } from '@inertiajs/react';
+import { Fragment } from 'react';
+
+export function Breadcrumbs({ breadcrumbs }: { breadcrumbs: BreadcrumbItemType[] }) {
+    return (
+        <>
+            {breadcrumbs.length > 0 && (
+                <Breadcrumb>
+                    <BreadcrumbList>
+                        {breadcrumbs.map((item, index) => {
+                            const isLast = index === breadcrumbs.length - 1;
+                            return (
+                                <Fragment key={index}>
+                                    <BreadcrumbItem>
+                                        {isLast ? (
+                                            <BreadcrumbPage>{item.title}</BreadcrumbPage>
+                                        ) : (
+                                            <BreadcrumbLink asChild>
+                                                <Link href={item.href}>{item.title}</Link>
+                                            </BreadcrumbLink>
+                                        )}
+                                    </BreadcrumbItem>
+                                    {!isLast && <BreadcrumbSeparator />}
+                                </Fragment>
+                            );
+                        })}
+                    </BreadcrumbList>
+                </Breadcrumb>
+            )}
+        </>
+    );
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/app-logo-icon.tsx
+---BEGIN FILE CONTENTS---
+import { SVGAttributes } from 'react';
+
+export default function AppLogoIcon(props: SVGAttributes<SVGElement>) {
+    return (
+        <svg {...props} viewBox="0 0 40 42" xmlns="http://www.w3.org/2000/svg">
+            <path
+                fillRule="evenodd"
+                clipRule="evenodd"
+                d="M17.2 5.63325L8.6 0.855469L0 5.63325V32.1434L16.2 41.1434L32.4 32.1434V23.699L40 19.4767V9.85547L31.4 5.07769L22.8 9.85547V18.2999L17.2 21.411V5.63325ZM38 18.2999L32.4 21.411V15.2545L38 12.1434V18.2999ZM36.9409 10.4439L31.4 13.5221L25.8591 10.4439L31.4 7.36561L36.9409 10.4439ZM24.8 18.2999V12.1434L30.4 15.2545V21.411L24.8 18.2999ZM23.8 20.0323L29.3409 23.1105L16.2 30.411L10.6591 27.3328L23.8 20.0323ZM7.6 27.9212L15.2 32.1434V38.2999L2 30.9666V7.92116L7.6 11.0323V27.9212ZM8.6 9.29991L3.05913 6.22165L8.6 3.14339L14.1409 6.22165L8.6 9.29991ZM30.4 24.8101L17.2 32.1434V38.2999L30.4 30.9666V24.8101ZM9.6 11.0323L15.2 7.92117V22.5221L9.6 25.6333V11.0323Z"
+            />
+        </svg>
+    );
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/delete-user.tsx
+---BEGIN FILE CONTENTS---
+import { useForm } from '@inertiajs/react';
+import { FormEventHandler, useRef } from 'react';
+
+import InputError from '@/components/input-error';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+
+import HeadingSmall from '@/components/heading-small';
+
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+
+export default function DeleteUser() {
+    const passwordInput = useRef<HTMLInputElement>(null);
+    const { data, setData, delete: destroy, processing, reset, errors, clearErrors } = useForm<Required<{ password: string }>>({ password: '' });
+
+    const deleteUser: FormEventHandler = (e) => {
+        e.preventDefault();
+
+        destroy(route('profile.destroy'), {
+            preserveScroll: true,
+            onSuccess: () => closeModal(),
+            onError: () => passwordInput.current?.focus(),
+            onFinish: () => reset(),
+        });
+    };
+
+    const closeModal = () => {
+        clearErrors();
+        reset();
+    };
+
+    return (
+        <div className="space-y-6">
+            <HeadingSmall title="Delete account" description="Delete your account and all of its resources" />
+            <div className="space-y-4 rounded-lg border border-red-100 bg-red-50 p-4 dark:border-red-200/10 dark:bg-red-700/10">
+                <div className="relative space-y-0.5 text-red-600 dark:text-red-100">
+                    <p className="font-medium">Warning</p>
+                    <p className="text-sm">Please proceed with caution, this cannot be undone.</p>
+                </div>
+
+                <Dialog>
+                    <DialogTrigger asChild>
+                        <Button variant="destructive">Delete account</Button>
+                    </DialogTrigger>
+                    <DialogContent>
+                        <DialogTitle>Are you sure you want to delete your account?</DialogTitle>
+                        <DialogDescription>
+                            Once your account is deleted, all of its resources and data will also be permanently deleted. Please enter your password
+                            to confirm you would like to permanently delete your account.
+                        </DialogDescription>
+                        <form className="space-y-6" onSubmit={deleteUser}>
+                            <div className="grid gap-2">
+                                <Label htmlFor="password" className="sr-only">
+                                    Password
+                                </Label>
+
+                                <Input
+                                    id="password"
+                                    type="password"
+                                    name="password"
+                                    ref={passwordInput}
+                                    value={data.password}
+                                    onChange={(e) => setData('password', e.target.value)}
+                                    placeholder="Password"
+                                    autoComplete="current-password"
+                                />
+
+                                <InputError message={errors.password} />
+                            </div>
+
+                            <DialogFooter className="gap-2">
+                                <DialogClose asChild>
+                                    <Button variant="secondary" onClick={closeModal}>
+                                        Cancel
+                                    </Button>
+                                </DialogClose>
+
+                                <Button variant="destructive" disabled={processing} asChild>
+                                    <button type="submit">Delete account</button>
+                                </Button>
+                            </DialogFooter>
+                        </form>
+                    </DialogContent>
+                </Dialog>
+            </div>
+        </div>
+    );
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/app-sidebar-header.tsx
+---BEGIN FILE CONTENTS---
+import { Breadcrumbs } from '@/components/breadcrumbs';
+import { SidebarTrigger } from '@/components/ui/sidebar';
+import { type BreadcrumbItem as BreadcrumbItemType } from '@/types';
+
+export function AppSidebarHeader({ breadcrumbs = [] }: { breadcrumbs?: BreadcrumbItemType[] }) {
+    return (
+        <header className="border-sidebar-border/50 flex h-16 shrink-0 items-center gap-2 border-b px-6 transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-12 md:px-4">
+            <div className="flex items-center gap-2">
+                <SidebarTrigger className="-ml-1" />
+                <Breadcrumbs breadcrumbs={breadcrumbs} />
+            </div>
+        </header>
+    );
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/heading-small.tsx
+---BEGIN FILE CONTENTS---
+export default function HeadingSmall({ title, description }: { title: string; description?: string }) {
+    return (
+        <header>
+            <h3 className="mb-0.5 text-base font-medium">{title}</h3>
+            {description && <p className="text-muted-foreground text-sm">{description}</p>}
+        </header>
+    );
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/layouts/app/app-header-layout.tsx
+---BEGIN FILE CONTENTS---
+import { AppContent } from '@/components/app-content';
+import { AppHeader } from '@/components/app-header';
+import { AppShell } from '@/components/app-shell';
+import { type BreadcrumbItem } from '@/types';
+import type { PropsWithChildren } from 'react';
+
+export default function AppHeaderLayout({ children, breadcrumbs }: PropsWithChildren<{ breadcrumbs?: BreadcrumbItem[] }>) {
+    return (
+        <AppShell>
+            <AppHeader breadcrumbs={breadcrumbs} />
+            <AppContent>{children}</AppContent>
+        </AppShell>
+    );
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/layouts/settings/layout.tsx
+---BEGIN FILE CONTENTS---
+import Heading from '@/components/heading';
+import { Button } from '@/components/ui/button';
+import { Separator } from '@/components/ui/separator';
+import { cn } from '@/lib/utils';
+import { type NavItem } from '@/types';
+import { Link } from '@inertiajs/react';
+import { type PropsWithChildren } from 'react';
+
+const sidebarNavItems: NavItem[] = [
+    {
+        title: 'Profile',
+        href: '/settings/profile',
+        icon: null,
+    },
+    {
+        title: 'Password',
+        href: '/settings/password',
+        icon: null,
+    },
+    {
+        title: 'Appearance',
+        href: '/settings/appearance',
+        icon: null,
+    },
+];
+
+export default function SettingsLayout({ children }: PropsWithChildren) {
+    // When server-side rendering, we only render the layout on the client...
+    if (typeof window === 'undefined') {
+        return null;
+    }
+
+    const currentPath = window.location.pathname;
+
+    return (
+        <div className="px-4 py-6">
+            <Heading title="Settings" description="Manage your profile and account settings" />
+
+            <div className="flex flex-col space-y-8 lg:flex-row lg:space-y-0 lg:space-x-12">
+                <aside className="w-full max-w-xl lg:w-48">
+                    <nav className="flex flex-col space-y-1 space-x-0">
+                        {sidebarNavItems.map((item, index) => (
+                            <Button
+                                key={`${item.href}-${index}`}
+                                size="sm"
+                                variant="ghost"
+                                asChild
+                                className={cn('w-full justify-start', {
+                                    'bg-muted': currentPath === item.href,
+                                })}
+                            >
+                                <Link href={item.href} prefetch>
+                                    {item.title}
+                                </Link>
+                            </Button>
+                        ))}
+                    </nav>
+                </aside>
+
+                <Separator className="my-6 md:hidden" />
+
+                <div className="flex-1 md:max-w-2xl">
+                    <section className="max-w-xl space-y-12">{children}</section>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/layouts/app-layout.tsx
+---BEGIN FILE CONTENTS---
+import AppLayoutTemplate from '@/layouts/app/app-header-layout';
+import { type BreadcrumbItem } from '@/types';
+import { type ReactNode } from 'react';
+
+interface AppLayoutProps {
+    children: ReactNode;
+    breadcrumbs?: BreadcrumbItem[];
+}
+
+export default ({ children, breadcrumbs, ...props }: AppLayoutProps) => (
+    <AppLayoutTemplate breadcrumbs={breadcrumbs} {...props}>
+        {children}
+    </AppLayoutTemplate>
+);
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/routes/console.php
+---BEGIN FILE CONTENTS---
+<?php
+
+use Illuminate\Foundation\Inspiring;
+use Illuminate\Support\Facades\Artisan;
+
+Artisan::command('inspire', function () {
+    $this->comment(Inspiring::quote());
+})->purpose('Display an inspiring quote');
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/routes/auth.php
+---BEGIN FILE CONTENTS---
+<?php
+
+use App\Http\Controllers\Auth\AuthenticatedSessionController;
+use App\Http\Controllers\Auth\ConfirmablePasswordController;
+use App\Http\Controllers\Auth\EmailVerificationNotificationController;
+use App\Http\Controllers\Auth\EmailVerificationPromptController;
+use App\Http\Controllers\Auth\NewPasswordController;
+use App\Http\Controllers\Auth\PasswordResetLinkController;
+use App\Http\Controllers\Auth\RegisteredUserController;
+use App\Http\Controllers\Auth\VerifyEmailController;
+use Illuminate\Support\Facades\Route;
+
+Route::middleware('guest')->group(function () {
+    Route::get('register', [RegisteredUserController::class, 'create'])
+        ->name('register');
+
+    Route::post('register', [RegisteredUserController::class, 'store']);
+
+    Route::get('login', [AuthenticatedSessionController::class, 'create'])
+        ->name('login');
+
+    Route::post('login', [AuthenticatedSessionController::class, 'store']);
+
+    Route::get('forgot-password', [PasswordResetLinkController::class, 'create'])
+        ->name('password.request');
+
+    Route::post('forgot-password', [PasswordResetLinkController::class, 'store'])
+        ->name('password.email');
+
+    Route::get('reset-password/{token}', [NewPasswordController::class, 'create'])
+        ->name('password.reset');
+
+    Route::post('reset-password', [NewPasswordController::class, 'store'])
+        ->name('password.store');
+});
+
+Route::middleware('auth')->group(function () {
+    Route::get('verify-email', EmailVerificationPromptController::class)
+        ->name('verification.notice');
+
+    Route::get('verify-email/{id}/{hash}', VerifyEmailController::class)
+        ->middleware(['signed', 'throttle:6,1'])
+        ->name('verification.verify');
+
+    Route::post('email/verification-notification', [EmailVerificationNotificationController::class, 'store'])
+        ->middleware('throttle:6,1')
+        ->name('verification.send');
+
+    Route::get('confirm-password', [ConfirmablePasswordController::class, 'show'])
+        ->name('password.confirm');
+
+    Route::post('confirm-password', [ConfirmablePasswordController::class, 'store']);
+
+    Route::post('logout', [AuthenticatedSessionController::class, 'destroy'])
+        ->name('logout');
+});
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/routes/settings.php
+---BEGIN FILE CONTENTS---
+<?php
+
+use App\Http\Controllers\Settings\PasswordController;
+use App\Http\Controllers\Settings\ProfileController;
+use Illuminate\Support\Facades\Route;
+use Inertia\Inertia;
+
+Route::middleware('auth')->group(function () {
+    Route::redirect('settings', 'settings/profile');
+
+    Route::get('settings/profile', [ProfileController::class, 'edit'])->name('profile.edit');
+    Route::patch('settings/profile', [ProfileController::class, 'update'])->name('profile.update');
+    Route::delete('settings/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');
+
+    Route::get('settings/password', [PasswordController::class, 'edit'])->name('password.edit');
+    Route::put('settings/password', [PasswordController::class, 'update'])->name('password.update');
+
+    Route::get('settings/appearance', function () {
+        return Inertia::render('settings/appearance');
+    })->name('appearance');
+});
+
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/routes/web.php
+---BEGIN FILE CONTENTS---
+<?php
+
+use Illuminate\Support\Facades\Route;
+use Inertia\Inertia;
+
+Route::get('/', function () {
+    return Inertia::render('welcome');
+})->name('home');
+
+Route::middleware(['auth', 'verified'])->group(function () {
+    Route::get('dashboard', function () {
+        return Inertia::render('dashboard');
+    })->name('dashboard');
+});
+
+require __DIR__.'/settings.php';
+require __DIR__.'/auth.php';
+require __DIR__.'/articles.php'; // Include the article routes
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/routes/articles.php
+---BEGIN FILE CONTENTS---
+<?php
+
+use App\Http\Controllers\ArticleController;
+use Illuminate\Support\Facades\Route;
+
+Route::middleware(['auth', 'verified'])->group(function () {
+   // Article management routes
+   Route::get('/articles', [ArticleController::class, 'index'])->name('articles.index');
+   Route::get('/articles/create', [ArticleController::class, 'create'])->name('articles.create');
+   Route::post('/articles', [ArticleController::class, 'store'])->name('articles.store');
+   Route::get('/articles/{uuid}/edit', [ArticleController::class, 'edit'])->name('articles.edit');
+   Route::delete('/articles/{uuid}', [ArticleController::class, 'destroy'])->name('articles.destroy');
+   
+   // Article title and content update routes (for autosave)
+   Route::patch('/articles/{uuid}/title', [ArticleController::class, 'updateTitle'])->name('articles.update.title');
+   Route::patch('/articles/{uuid}/content', [ArticleController::class, 'updateContent'])->name('articles.update.content');
+   
+   // Article preview and publish routes
+   Route::post('/articles/preview', [ArticleController::class, 'preview'])->name('articles.preview');
+   Route::post('/articles/{uuid}/publish', [ArticleController::class, 'publish'])->name('articles.publish');
+   
+   // Add schedule route for articles
+   Route::post('/articles/{uuid}/schedule', [ArticleController::class, 'schedule'])->name('articles.schedule');
+   
+   // Media upload route
+   Route::post('/articles/media', [ArticleController::class, 'uploadMedia'])->name('articles.media.upload');
+   
+   // Add this missing API route for fetching article media
+   Route::get('/api/articles/{uuid}/media', [ArticleController::class, 'getArticleMedia'])->name('api.articles.media');
+});
+
+// Public article routes
+Route::get('/articles/{slug}', [ArticleController::class, 'show'])->name('articles.show');
+Route::get('/preview/{token}', [ArticleController::class, 'showPreview'])->name('articles.preview.show');
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/database/migrations/2025_04_21_081309_create_articles_table.php
+---BEGIN FILE CONTENTS---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Run the migrations.
+     */
+    public function up(): void
+    {
+        Schema::create('articles', function (Blueprint $table) {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->foreignId('user_id')->constrained()->onDelete('cascade');
+            $table->string('title')->nullable();
+            $table->string('slug')->unique()->nullable();
+            $table->text('content')->nullable();
+            $table->enum('status', ['draft', 'scheduled', 'published'])->default('draft');
+            $table->timestamp('published_at')->nullable();
+            $table->timestamp('scheduled_at')->nullable(); // Added scheduled_at column
+            $table->json('seo_data')->nullable();
+            $table->integer('word_count')->default(0);
+            $table->integer('reading_time')->default(0);
+            $table->timestamps();
+        });
+        
+        Schema::create('article_versions', function (Blueprint $table) {
+            $table->id();
+            $table->foreignId('article_id')->constrained()->onDelete('cascade');
+            $table->text('content');
+            $table->string('version_name')->nullable();
+            $table->timestamps();
+        });
+        
+        Schema::create('media', function (Blueprint $table) {
+            $table->id();
+            $table->foreignId('user_id')->constrained()->onDelete('cascade');
+            $table->string('original_name');
+            $table->string('filename');
+            $table->string('mime_type');
+            $table->string('path');
+            $table->integer('size');
+            $table->json('metadata')->nullable();
+            $table->timestamps();
+        });
+        
+        Schema::create('article_media', function (Blueprint $table) {
+            $table->foreignId('article_id')->constrained()->onDelete('cascade');
+            $table->foreignId('media_id')->constrained()->onDelete('cascade');
+            $table->primary(['article_id', 'media_id']);
+            $table->timestamps();
+        });
+    }
+
+    /**
+     * Reverse the migrations.
+     */
+    public function down(): void
+    {
+        Schema::dropIfExists('article_media');
+        Schema::dropIfExists('media');
+        Schema::dropIfExists('article_versions');
+        Schema::dropIfExists('articles');
+    }
+};
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/app/Console/Kernel.php
+---BEGIN FILE CONTENTS---
+<?php
+
+namespace App\Console;
+
+use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Foundation\Console\Kernel as ConsoleKernel;
+
+class Kernel extends ConsoleKernel
+{
+    /**
+     * Define the application's command schedule.
+     */
+    protected function schedule(Schedule $schedule): void
+    {
+        // $schedule->command('inspire')->hourly();
+        
+        // Schedule the command to run every minute to check for articles to publish
+        $schedule->command('articles:publish-scheduled')->everyMinute();
+    }
+
+    /**
+     * Register the commands for the application.
+     */
+    protected function commands(): void
+    {
+        $this->load(__DIR__.'/Commands');
+
+        require base_path('routes/console.php');
+    }
+}
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/app/Console/Commands/PublishScheduledArticles.php
+---BEGIN FILE CONTENTS---
+<?php
+
+namespace App\Console\Commands;
+
+use App\Models\Article;
+use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Log;
+
+class PublishScheduledArticles extends Command
+{
+    protected $signature = 'articles:publish-scheduled';
+    protected $description = 'Publish articles that are scheduled for publication';
+
+    public function handle()
+    {
+        $articles = Article::where('status', 'scheduled')
+            ->where('scheduled_at', '<=', now())
+            ->get();
+
+        $count = 0;
+        foreach ($articles as $article) {
+            try {
+                $article->update([
+                    'status' => 'published',
+                    'published_at' => now(),
+                ]);
+                
+                // Create published version
+                $article->createVersionSnapshot('Published Version');
+                
+                $count++;
+                $this->info("Published scheduled article: {$article->title}");
+                Log::info("Published scheduled article", ['article_id' => $article->id]);
+            } catch (\Exception $e) {
+                $this->error("Failed to publish article ID {$article->id}: {$e->getMessage()}");
+                Log::error("Failed to publish scheduled article", [
+                    'article_id' => $article->id,
+                    'error' => $e->getMessage()
+                ]);
+            }
+        }
+
+        $this->info("Published {$count} scheduled articles");
+        return Command::SUCCESS;
+    }
+}
+---END FILE CONTENTS---
+
+
