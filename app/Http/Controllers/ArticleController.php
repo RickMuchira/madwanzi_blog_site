@@ -492,11 +492,25 @@ class ArticleController extends Controller
            // Attach media to article
            $article->media()->attach($media->id);
            
+           // Get the full URL - make sure it's an absolute URL
+           $mediaUrl = asset('storage/' . $path);
+           
+           // Log the URL and path for debugging
+           Log::info('Media upload successful', [
+               'media_id' => $media->id,
+               'filename' => $filename,
+               'path' => $path,
+               'storage_path' => storage_path('app/public/' . $path),
+               'full_url' => $mediaUrl,
+               'media_url_from_model' => $media->url,
+               'exists' => file_exists(storage_path('app/public/' . $path)),
+           ]);
+           
            return response()->json([
                'success' => true,
                'media' => [
                    'id' => $media->id,
-                   'url' => $media->url,
+                   'url' => $mediaUrl, // Use the manually constructed URL here
                    'filename' => $media->original_name,
                    'mime_type' => $media->mime_type,
                ],
@@ -522,9 +536,12 @@ class ArticleController extends Controller
                ->firstOrFail();
                
            $media = $article->media()->get()->map(function ($item) {
+               // Ensure we're using the fully qualified URL
+               $mediaUrl = asset('storage/' . $item->path);
+               
                return [
                    'id' => $item->id,
-                   'url' => $item->url,
+                   'url' => $mediaUrl, // Use explicitly constructed URL
                    'filename' => $item->original_name,
                    'mime_type' => $item->mime_type,
                ];

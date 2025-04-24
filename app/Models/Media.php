@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Support\Facades\Log;
 
 class Media extends Model
 {
@@ -66,6 +67,15 @@ class Media extends Model
      */
     public function getUrlAttribute(): string
     {
-        return asset('storage/' . $this->path);
+        $url = asset('storage/' . $this->path);
+        
+        // Debug URL construction
+        Log::info('Constructing media URL', [
+            'media_id' => $this->id,
+            'path' => $this->path,
+            'full_url' => $url
+        ]);
+        
+        return $url;
     }
 }

@@ -1,0 +1,3042 @@
+FILE: /home/rick110/Downloads/110/madwanzi1/database/migrations/2025_04_21_081309_create_articles_table.php
+---BEGIN FILE CONTENTS---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Run the migrations.
+     */
+    public function up(): void
+    {
+        Schema::create('articles', function (Blueprint $table) {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->foreignId('user_id')->constrained()->onDelete('cascade');
+            $table->string('title')->nullable();
+            $table->string('slug')->unique()->nullable();
+            $table->text('content')->nullable();
+            $table->enum('status', ['draft', 'scheduled', 'published'])->default('draft');
+            $table->timestamp('published_at')->nullable();
+            $table->timestamp('scheduled_at')->nullable(); // Added scheduled_at column
+            $table->json('seo_data')->nullable();
+            $table->integer('word_count')->default(0);
+            $table->integer('reading_time')->default(0);
+            $table->timestamps();
+        });
+        
+        Schema::create('article_versions', function (Blueprint $table) {
+            $table->id();
+            $table->foreignId('article_id')->constrained()->onDelete('cascade');
+            $table->text('content');
+            $table->string('version_name')->nullable();
+            $table->timestamps();
+        });
+        
+        Schema::create('media', function (Blueprint $table) {
+            $table->id();
+            $table->foreignId('user_id')->constrained()->onDelete('cascade');
+            $table->string('original_name');
+            $table->string('filename');
+            $table->string('mime_type');
+            $table->string('path');
+            $table->integer('size');
+            $table->json('metadata')->nullable();
+            $table->timestamps();
+        });
+        
+        Schema::create('article_media', function (Blueprint $table) {
+            $table->foreignId('article_id')->constrained()->onDelete('cascade');
+            $table->foreignId('media_id')->constrained()->onDelete('cascade');
+            $table->primary(['article_id', 'media_id']);
+            $table->timestamps();
+        });
+    }
+
+    /**
+     * Reverse the migrations.
+     */
+    public function down(): void
+    {
+        Schema::dropIfExists('article_media');
+        Schema::dropIfExists('media');
+        Schema::dropIfExists('article_versions');
+        Schema::dropIfExists('articles');
+    }
+};
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/app/Http/Controllers/ArticleController.php
+---BEGIN FILE CONTENTS---
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Article;
+use App\Models\Media;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
+use Inertia\Inertia;
+
+class ArticleController extends Controller
+{
+   /**
+    * Display a listing of the articles.
+    */
+   public function index()
+   {
+       try {
+           $articles = Auth::user()->articles()
+               ->orderBy('updated_at', 'desc')
+               ->get();
+               
+           return Inertia::render('articles/index', [
+               'articles' => $articles,
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error fetching articles: ' . $e->getMessage());
+           return back()->with('error', 'Could not load articles.');
+       }
+   }
+
+   /**
+    * Show the form for creating a new article.
+    */
+   public function create()
+   {
+       try {
+           // Create a temporary slug for the draft article
+           $tempSlug = 'draft-' . Str::random(10);
+           
+           // Create a new draft article
+           $article = Auth::user()->articles()->create([
+               'title' => '',
+               'content' => '',
+               'status' => 'draft',
+               'uuid' => Str::uuid(),
+               'slug' => $tempSlug, // Add temporary slug
+           ]);
+           
+           Log::info('Created new article', ['article_id' => $article->id, 'uuid' => $article->uuid]);
+           
+           return Inertia::render('articles/editor', [
+               'article' => $article,
+               'isNewArticle' => true,
+           ]);
+       } catch (\Exception $e) {
+           // Log the error
+           Log::error('Failed to create article: ' . $e->getMessage(), [
+               'exception' => $e,
+               'user_id' => Auth::id()
+           ]);
+           
+           // Return error response
+           return back()->with('error', 'Failed to create article. Please try again.');
+       }
+   }
+
+   /**
+    * Store a newly created article in storage.
+    */
+   public function store(Request $request)
+   {
+       try {
+           Log::info('Article store attempt', ['data' => $request->all()]);
+           
+           $validated = $request->validate([
+               'uuid' => 'required|string|exists:articles,uuid',
+               'title' => 'nullable|string|max:255',
+               'content' => 'nullable|string',
+           ]);
+           
+           $article = Article::where('uuid', $validated['uuid'])
+               ->where('user_id', Auth::id())
+               ->first();
+               
+           if (!$article) {
+               Log::warning('Article not found during save', ['uuid' => $validated['uuid'], 'user_id' => Auth::id()]);
+               return response()->json(['error' => 'Article not found'], 404);
+           }
+           
+           // Update the article with new data
+           $article->update([
+               'title' => $validated['title'] ?? $article->title,
+               'content' => $validated['content'] ?? $article->content,
+           ]);
+           
+           // If title is updated, update the slug too (for draft articles)
+           if (isset($validated['title']) && $article->status === 'draft') {
+               $this->updateArticleSlug($article, $validated['title']);
+           }
+           
+           $article->updateWordStats();
+           
+           // Create a version snapshot
+           $article->createVersionSnapshot();
+           
+           Log::info('Article saved successfully', ['article_id' => $article->id, 'uuid' => $article->uuid]);
+           
+           return back()->with('success', 'Article saved successfully');
+       } catch (\Exception $e) {
+           Log::error('Error saving article: ' . $e->getMessage(), [
+               'exception' => $e,
+               'request_data' => $request->all()
+           ]);
+           
+           return response()->json(['error' => 'Failed to save article: ' . $e->getMessage()], 500);
+       }
+   }
+
+   /**
+    * Update the article title.
+    */
+   public function updateTitle(Request $request)
+   {
+       try {
+           Log::info('Title update attempt', ['data' => $request->all()]);
+           
+           $validated = $request->validate([
+               'uuid' => 'required|string|exists:articles,uuid',
+               'title' => 'required|string|max:255',
+           ]);
+           
+           $article = Article::where('uuid', $validated['uuid'])
+               ->where('user_id', Auth::id())
+               ->first();
+               
+           if (!$article) {
+               Log::warning('Article not found during title update', ['uuid' => $validated['uuid'], 'user_id' => Auth::id()]);
+               return response()->json(['error' => 'Article not found'], 404);
+           }
+           
+           // Update the article title
+           $article->update([
+               'title' => $validated['title'],
+           ]);
+           
+           // Update the slug if the article is a draft
+           if ($article->status === 'draft') {
+               $this->updateArticleSlug($article, $validated['title']);
+           }
+           
+           Log::info('Article title updated successfully', ['article_id' => $article->id, 'uuid' => $article->uuid]);
+           
+           return response()->json([
+               'success' => true,
+               'slug' => $article->slug,
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error updating article title: ' . $e->getMessage(), [
+               'exception' => $e,
+               'request_data' => $request->all()
+           ]);
+           
+           return response()->json(['error' => 'Failed to update title: ' . $e->getMessage()], 500);
+       }
+   }
+
+   /**
+    * Helper method to update an article's slug based on title
+    */
+   private function updateArticleSlug(Article $article, string $title)
+   {
+       if (empty($title)) {
+           // Keep existing slug if title is empty
+           return;
+       }
+       
+       // Generate base slug from title
+       $baseSlug = Str::slug($title);
+       
+       // If the slug is empty (e.g., title has only special characters),
+       // use a fallback
+       if (empty($baseSlug)) {
+           $baseSlug = 'article';
+       }
+       
+       $slug = $baseSlug;
+       $counter = 1;
+       
+       // Check for slug uniqueness
+       while (Article::where('slug', $slug)
+               ->where('id', '!=', $article->id)
+               ->exists()) {
+           $slug = $baseSlug . '-' . $counter;
+           $counter++;
+       }
+       
+       // Update the article with the new slug
+       $article->update(['slug' => $slug]);
+       
+       return $slug;
+   }
+
+   /**
+    * Update the article content.
+    */
+   public function updateContent(Request $request)
+   {
+       try {
+           Log::info('Content update attempt', ['uuid' => $request->uuid]);
+           
+           $validated = $request->validate([
+               'uuid' => 'required|string|exists:articles,uuid',
+               'content' => 'nullable|string',
+           ]);
+           
+           $article = Article::where('uuid', $validated['uuid'])
+               ->where('user_id', Auth::id())
+               ->first();
+               
+           if (!$article) {
+               Log::warning('Article not found during content update', ['uuid' => $validated['uuid'], 'user_id' => Auth::id()]);
+               return response()->json(['error' => 'Article not found'], 404);
+           }
+               
+           $article->update([
+               'content' => $validated['content'],
+           ]);
+           
+           $article->updateWordStats();
+           
+           Log::info('Article content updated successfully', ['article_id' => $article->id, 'uuid' => $article->uuid]);
+           
+           return response()->json([
+               'success' => true,
+               'word_count' => $article->word_count,
+               'reading_time' => $article->reading_time,
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error updating article content: ' . $e->getMessage(), [
+               'exception' => $e,
+               'request_data' => ['uuid' => $request->uuid]
+           ]);
+           
+           return response()->json(['error' => 'Failed to update content: ' . $e->getMessage()], 500);
+       }
+   }
+
+   /**
+    * Display the specified article for editing.
+    */
+   public function edit(string $uuid)
+   {
+       try {
+           $article = Article::where('uuid', $uuid)
+               ->where('user_id', Auth::id())
+               ->firstOrFail();
+               
+           return Inertia::render('articles/editor', [
+               'article' => $article,
+               'isNewArticle' => false,
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error loading article for edit: ' . $e->getMessage(), [
+               'exception' => $e,
+               'uuid' => $uuid,
+               'user_id' => Auth::id()
+           ]);
+           
+           return redirect()->route('articles.index')->with('error', 'Article not found or access denied.');
+       }
+   }
+
+   /**
+    * Generate a preview link for the article.
+    */
+   public function preview(Request $request)
+   {
+       try {
+           $validated = $request->validate([
+               'uuid' => 'required|string|exists:articles,uuid',
+           ]);
+           
+           $article = Article::where('uuid', $validated['uuid'])
+               ->where('user_id', Auth::id())
+               ->firstOrFail();
+               
+           // Generate a temporary token for preview access
+           $previewToken = Str::random(32);
+           
+           // Store the token in cache with an expiration
+           cache()->put('preview_' . $previewToken, $article->uuid, now()->addHours(24));
+           
+           $previewUrl = route('articles.preview.show', ['token' => $previewToken]);
+           
+           return response()->json([
+               'preview_url' => $previewUrl,
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error generating preview: ' . $e->getMessage(), [
+               'exception' => $e,
+               'request_data' => $request->all()
+           ]);
+           
+           return response()->json(['error' => 'Failed to generate preview link'], 500);
+       }
+   }
+
+   /**
+    * Show the preview of an article.
+    */
+   public function showPreview(string $token)
+   {
+       try {
+           $articleUuid = cache()->get('preview_' . $token);
+           
+           if (!$articleUuid) {
+               abort(404);
+           }
+           
+           $article = Article::where('uuid', $articleUuid)->firstOrFail();
+           
+           return Inertia::render('articles/preview', [
+               'article' => $article,
+               'author' => $article->author,
+               'isPreview' => true,
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error showing preview: ' . $e->getMessage(), [
+               'exception' => $e,
+               'token' => $token
+           ]);
+           
+           return redirect()->route('dashboard')->with('error', 'Preview not available or has expired.');
+       }
+   }
+
+   /**
+    * Schedule an article for future publication.
+    */
+   public function schedule(Request $request)
+   {
+       try {
+           $validated = $request->validate([
+               'uuid' => 'required|string|exists:articles,uuid',
+               'scheduled_at' => 'required|date|after:now',
+           ]);
+           
+           $article = Article::where('uuid', $validated['uuid'])
+               ->where('user_id', Auth::id())
+               ->firstOrFail();
+               
+           if (empty($article->title) || empty($article->content)) {
+               return response()->json([
+                   'success' => false,
+                   'message' => 'Article must have a title and content to be scheduled.',
+               ], 422);
+           }
+           
+           // Ensure the slug is based on the title before scheduling
+           $this->updateArticleSlug($article, $article->title);
+           
+           $article->update([
+               'status' => 'scheduled',
+               'scheduled_at' => $validated['scheduled_at'],
+           ]);
+           
+           // Create a version snapshot on scheduling
+           $article->createVersionSnapshot('Scheduled Version');
+           
+           return response()->json([
+               'success' => true,
+               'message' => 'Article scheduled for publication on ' . $validated['scheduled_at'],
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error scheduling article: ' . $e->getMessage(), [
+               'exception' => $e,
+               'request_data' => $request->all()
+           ]);
+           
+           return response()->json(['error' => 'Failed to schedule article'], 500);
+       }
+   }
+
+   /**
+    * Publish the article.
+    */
+   public function publish(Request $request)
+   {
+       try {
+           $validated = $request->validate([
+               'uuid' => 'required|string|exists:articles,uuid',
+           ]);
+           
+           $article = Article::where('uuid', $validated['uuid'])
+               ->where('user_id', Auth::id())
+               ->firstOrFail();
+               
+           if (empty($article->title) || empty($article->content)) {
+               return response()->json([
+                   'success' => false,
+                   'message' => 'Article must have a title and content to be published.',
+               ], 422);
+           }
+           
+           // Ensure the slug is based on the title before publishing
+           $this->updateArticleSlug($article, $article->title);
+           
+           $article->update([
+               'status' => 'published',
+               'published_at' => now(),
+           ]);
+           
+           // Create a version snapshot on publish
+           $article->createVersionSnapshot('Published Version');
+           
+           return response()->json([
+               'success' => true,
+               'article_url' => route('articles.show', $article->slug),
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error publishing article: ' . $e->getMessage(), [
+               'exception' => $e,
+               'request_data' => $request->all()
+           ]);
+           
+           return response()->json(['error' => 'Failed to publish article'], 500);
+       }
+   }
+
+   /**
+    * Display the published article.
+    */
+   public function show(string $slug)
+   {
+       try {
+           $article = Article::where('slug', $slug)
+               ->published()
+               ->firstOrFail();
+               
+           return Inertia::render('articles/show', [
+               'article' => $article,
+               'author' => $article->author,
+               'isPreview' => false,
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error showing article: ' . $e->getMessage(), [
+               'exception' => $e,
+               'slug' => $slug
+           ]);
+           
+           return redirect()->route('dashboard')->with('error', 'Article not found.');
+       }
+   }
+
+   /**
+    * Upload media for the article.
+    */
+   public function uploadMedia(Request $request)
+   {
+       try {
+           $request->validate([
+               'file' => 'required|file|max:10240|mimes:jpeg,png,jpg,gif,svg',
+               'article_uuid' => 'required|string|exists:articles,uuid',
+           ]);
+           
+           $article = Article::where('uuid', $request->article_uuid)
+               ->where('user_id', Auth::id())
+               ->firstOrFail();
+               
+           $file = $request->file('file');
+           $filename = Str::uuid() . '.' . $file->getClientOriginalExtension();
+           $path = $file->storeAs('media', $filename, 'public');
+           
+           // Create media record
+           $media = Media::create([
+               'user_id' => Auth::id(),
+               'original_name' => $file->getClientOriginalName(),
+               'filename' => $filename,
+               'mime_type' => $file->getMimeType(),
+               'path' => $path,
+               'size' => $file->getSize(),
+               'metadata' => [
+                   'width' => getimagesize($file->path())[0] ?? null,
+                   'height' => getimagesize($file->path())[1] ?? null,
+               ],
+           ]);
+           
+           // Attach media to article
+           $article->media()->attach($media->id);
+           
+           return response()->json([
+               'success' => true,
+               'media' => [
+                   'id' => $media->id,
+                   'url' => $media->url,
+                   'filename' => $media->original_name,
+                   'mime_type' => $media->mime_type,
+               ],
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error uploading media: ' . $e->getMessage(), [
+               'exception' => $e,
+               'request_data' => $request->all()
+           ]);
+           
+           return response()->json(['error' => 'Failed to upload media: ' . $e->getMessage()], 500);
+       }
+   }
+
+   /**
+    * Get media for an article.
+    */
+   public function getArticleMedia(string $uuid)
+   {
+       try {
+           $article = Article::where('uuid', $uuid)
+               ->where('user_id', Auth::id())
+               ->firstOrFail();
+               
+           $media = $article->media()->get()->map(function ($item) {
+               return [
+                   'id' => $item->id,
+                   'url' => $item->url,
+                   'filename' => $item->original_name,
+                   'mime_type' => $item->mime_type,
+               ];
+           });
+           
+           return response()->json([
+               'success' => true,
+               'media' => $media,
+           ]);
+       } catch (\Exception $e) {
+           Log::error('Error fetching article media: ' . $e->getMessage(), [
+               'exception' => $e,
+               'uuid' => $uuid
+           ]);
+           
+           return response()->json(['error' => 'Failed to fetch media'], 500);
+       }
+   }
+
+   /**
+    * Remove the specified article from storage.
+    */
+   public function destroy(string $uuid)
+   {
+       try {
+           $article = Article::where('uuid', $uuid)
+               ->where('user_id', Auth::id())
+               ->firstOrFail();
+               
+           // Delete article versions
+           $article->versions()->delete();
+           
+           // Detach media (but don't delete them)
+           $article->media()->detach();
+           
+           // Delete the article
+           $article->delete();
+           
+           return redirect()->route('articles.index')->with('success', 'Article deleted successfully');
+       } catch (\Exception $e) {
+           Log::error('Error deleting article: ' . $e->getMessage(), [
+               'exception' => $e,
+               'uuid' => $uuid,
+               'user_id' => Auth::id()
+           ]);
+           
+           return redirect()->route('articles.index')->with('error', 'Failed to delete article.');
+       }
+   }
+}
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/app/Models/Article.php
+---BEGIN FILE CONTENTS---
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Str;
+
+class Article extends Model
+{
+   use HasFactory;
+
+   /**
+    * The attributes that are mass assignable.
+    *
+    * @var array<int, string>
+    */
+   protected $fillable = [
+       'uuid',
+       'user_id',
+       'title',
+       'slug',
+       'content',
+       'status',
+       'published_at',
+       'scheduled_at',
+       'seo_data',
+       'word_count',
+       'reading_time',
+   ];
+
+   /**
+    * The attributes that should be cast.
+    *
+    * @var array<string, string>
+    */
+   protected $casts = [
+       'published_at' => 'datetime',
+       'scheduled_at' => 'datetime',
+       'seo_data' => 'array', // Changed from 'json' for better compatibility
+   ];
+
+   /**
+    * Boot the model.
+    */
+   protected static function boot()
+   {
+       parent::boot();
+
+       static::creating(function ($article) {
+           $article->uuid = $article->uuid ?? (string) Str::uuid();
+           
+           if (empty($article->slug) && !empty($article->title)) {
+               $article->slug = Str::slug($article->title);
+           }
+       });
+       
+       static::updating(function ($article) {
+           // Only update the slug if title changed and the slug hasn't been manually set
+           if ($article->isDirty('title') && !$article->isDirty('slug') && !empty($article->title)) {
+               $article->slug = Str::slug($article->title);
+           }
+       });
+   }
+
+   /**
+    * Get the user that owns the article.
+    */
+   public function author(): BelongsTo
+   {
+       return $this->belongsTo(User::class, 'user_id');
+   }
+
+   /**
+    * Get the article versions.
+    */
+   public function versions(): HasMany
+   {
+       return $this->hasMany(ArticleVersion::class);
+   }
+
+   /**
+    * Get the media attached to the article.
+    */
+   public function media(): BelongsToMany
+   {
+       return $this->belongsToMany(Media::class, 'article_media')
+           ->withTimestamps();
+   }
+
+   /**
+    * Create a version snapshot of the current content.
+    */
+   public function createVersionSnapshot(string $versionName = null): ?ArticleVersion
+   {
+       try {
+           return $this->versions()->create([
+               'content' => $this->content ?? '',
+               'version_name' => $versionName ?? 'Snapshot ' . ($this->versions()->count() + 1),
+           ]);
+       } catch (\Exception $e) {
+           \Log::error('Error creating version snapshot: ' . $e->getMessage(), [
+               'article_id' => $this->id,
+               'exception' => $e
+           ]);
+           return null;
+       }
+   }
+
+   /**
+    * Calculate and update the word count and reading time.
+    */
+   public function updateWordStats(): self
+   {
+       try {
+           // If content is null, set default values
+           if (empty($this->content)) {
+               $this->word_count = 0;
+               $this->reading_time = 0;
+               $this->save();
+               return $this;
+           }
+           
+           // Safely strip tags and count words
+           $plainText = strip_tags($this->content ?? '');
+           $this->word_count = str_word_count($plainText);
+           
+           // Calculate reading time (average reading speed is about 200 words per minute)
+           // Minimum 1 minute reading time
+           $this->reading_time = max(1, ceil($this->word_count / 200));
+           
+           $this->save();
+           
+           return $this;
+       } catch (\Exception $e) {
+           \Log::error('Error updating word stats: ' . $e->getMessage(), [
+               'article_id' => $this->id,
+               'exception' => $e
+           ]);
+           
+           // Don't let this failure prevent saving
+           return $this;
+       }
+   }
+
+   /**
+    * Scope a query to only include published articles.
+    */
+   public function scopePublished($query)
+   {
+       return $query->where('status', 'published')
+           ->whereNotNull('published_at')
+           ->where('published_at', '<=', now());
+   }
+
+   /**
+    * Scope a query to only include draft articles.
+    */
+   public function scopeDraft($query)
+   {
+       return $query->where('status', 'draft');
+   }
+   
+   /**
+    * Scope a query to only include scheduled articles.
+    */
+   public function scopeScheduled($query)
+   {
+       return $query->where('status', 'scheduled')
+           ->whereNotNull('scheduled_at');
+   }
+}
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/app/Models/Media.php
+---BEGIN FILE CONTENTS---
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+
+class Media extends Model
+{
+    use HasFactory;
+
+    /**
+     * The attributes that are mass assignable.
+     *
+     * @var array<int, string>
+     */
+    protected $fillable = [
+        'user_id',
+        'original_name',
+        'filename',
+        'mime_type',
+        'path',
+        'size',
+        'metadata',
+    ];
+
+    /**
+     * The attributes that should be cast.
+     *
+     * @var array<string, string>
+     */
+    protected $casts = [
+        'metadata' => 'array', // Changed from 'json' for better compatibility
+    ];
+
+    /**
+     * The accessors to append to the model's array form.
+     *
+     * @var array
+     */
+    protected $appends = [
+        'url',
+    ];
+
+    /**
+     * Get the user that owns the media.
+     */
+    public function user(): BelongsTo
+    {
+        return $this->belongsTo(User::class);
+    }
+
+    /**
+     * Get the articles that use this media.
+     */
+    public function articles(): BelongsToMany
+    {
+        return $this->belongsToMany(Article::class, 'article_media')
+            ->withTimestamps();
+    }
+
+    /**
+     * Get the full URL to the media file.
+     */
+    public function getUrlAttribute(): string
+    {
+        return asset('storage/' . $this->path);
+    }
+}
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/app/Models/User.php
+---BEGIN FILE CONTENTS---
+<?php
+
+namespace App\Models;
+
+// use Illuminate\Contracts\Auth\MustVerifyEmail;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Notifications\Notifiable;
+
+class User extends Authenticatable
+{
+    /** @use HasFactory<\Database\Factories\UserFactory> */
+    use HasFactory, Notifiable;
+
+    /**
+     * The attributes that are mass assignable.
+     *
+     * @var list<string>
+     */
+    protected $fillable = [
+        'name',
+        'email',
+        'password',
+    ];
+
+    /**
+     * The attributes that should be hidden for serialization.
+     *
+     * @var list<string>
+     */
+    protected $hidden = [
+        'password',
+        'remember_token',
+    ];
+
+    /**
+     * Get the attributes that should be cast.
+     *
+     * @return array<string, string>
+     */
+    protected function casts(): array
+    {
+        return [
+            'email_verified_at' => 'datetime',
+            'password' => 'hashed',
+        ];
+    }
+    
+    /**
+     * Get the articles authored by the user.
+     */
+    public function articles(): HasMany
+    {
+        return $this->hasMany(Article::class);
+    }
+    
+    /**
+     * Get the media uploaded by the user.
+     */
+    public function media(): HasMany
+    {
+        return $this->hasMany(Media::class);
+    }
+}
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/app/Models/ArticleVersion.php
+---BEGIN FILE CONTENTS---
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+
+class ArticleVersion extends Model
+{
+    use HasFactory;
+
+    /**
+     * The attributes that are mass assignable.
+     *
+     * @var array<int, string>
+     */
+    protected $fillable = [
+        'article_id',
+        'content',
+        'version_name',
+    ];
+
+    /**
+     * Get the article that owns the version.
+     */
+    public function article(): BelongsTo
+    {
+        return $this->belongsTo(Article::class);
+    }
+}
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/routes/articles.php
+---BEGIN FILE CONTENTS---
+<?php
+
+use App\Http\Controllers\ArticleController;
+use Illuminate\Support\Facades\Route;
+
+Route::middleware(['auth', 'verified'])->group(function () {
+   // Article management routes
+   Route::get('/articles', [ArticleController::class, 'index'])->name('articles.index');
+   Route::get('/articles/create', [ArticleController::class, 'create'])->name('articles.create');
+   Route::post('/articles', [ArticleController::class, 'store'])->name('articles.store');
+   Route::get('/articles/{uuid}/edit', [ArticleController::class, 'edit'])->name('articles.edit');
+   Route::delete('/articles/{uuid}', [ArticleController::class, 'destroy'])->name('articles.destroy');
+   
+   // Article title and content update routes (for autosave)
+   Route::patch('/articles/{uuid}/title', [ArticleController::class, 'updateTitle'])->name('articles.update.title');
+   Route::patch('/articles/{uuid}/content', [ArticleController::class, 'updateContent'])->name('articles.update.content');
+   
+   // Article preview and publish routes
+   Route::post('/articles/preview', [ArticleController::class, 'preview'])->name('articles.preview');
+   Route::post('/articles/{uuid}/publish', [ArticleController::class, 'publish'])->name('articles.publish');
+   
+   // Add schedule route for articles
+   Route::post('/articles/{uuid}/schedule', [ArticleController::class, 'schedule'])->name('articles.schedule');
+   
+   // Media upload route
+   Route::post('/articles/media', [ArticleController::class, 'uploadMedia'])->name('articles.media.upload');
+   
+   // Add this missing API route for fetching article media
+   Route::get('/api/articles/{uuid}/media', [ArticleController::class, 'getArticleMedia'])->name('api.articles.media');
+});
+
+// Public article routes
+Route::get('/articles/{slug}', [ArticleController::class, 'show'])->name('articles.show');
+Route::get('/preview/{token}', [ArticleController::class, 'showPreview'])->name('articles.preview.show');
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/tiptap/rich-text-editor.tsx
+---BEGIN FILE CONTENTS---
+"use client"
+
+import "./tiptap.css"
+import { useCallback, useEffect } from "react"
+import { EditorContent, useEditor, type Editor } from "@tiptap/react"
+import StarterKit from "@tiptap/starter-kit"
+import Placeholder from "@tiptap/extension-placeholder"
+import TextAlign from "@tiptap/extension-text-align"
+import TextStyle from "@tiptap/extension-text-style"
+import Color from "@tiptap/extension-color"
+import Highlight from "@tiptap/extension-highlight"
+import Link from "@tiptap/extension-link"
+import Underline from "@tiptap/extension-underline"
+import Typography from "@tiptap/extension-typography"
+
+import { EditorToolbar } from "@/components/tiptap/toolbars/editor-toolbar"
+import { FloatingToolbar } from "@/components/tiptap/extensions/floating-toolbar"
+import { TipTapFloatingMenu } from "@/components/tiptap/extensions/floating-menu"
+import { getEditorContent, htmlToPlainText, calculateReadingTime } from "@/lib/tiptap-utils"
+import { ImageExtension } from "@/components/tiptap/extensions/image"
+import { ImagePlaceholder } from "@/components/tiptap/extensions/image-placeholder"
+
+interface RichTextEditorProps {
+  initialContent: string;
+  articleUuid: string; // Add articleUuid prop
+  onUpdate?: (content: string) => void;
+  onStatsUpdate?: (stats: { wordCount: number, readingTime: number }) => void;
+  onEditorReady?: (editor: Editor) => void;
+}
+
+export function RichTextEditor({ 
+  initialContent = "", 
+  articleUuid, // Add this parameter
+  onUpdate,
+  onStatsUpdate,
+  onEditorReady
+}: RichTextEditorProps) {
+  
+  const updateStats = useCallback((content: string) => {
+    if (!onStatsUpdate) return
+    
+    const plainText = htmlToPlainText(content)
+    const wordCount = plainText.split(/\s+/).filter(Boolean).length
+    const readingTime = calculateReadingTime(wordCount)
+    
+    onStatsUpdate({ wordCount, readingTime })
+  }, [onStatsUpdate])
+
+  const editor = useEditor({
+    extensions: [
+      StarterKit.configure({
+        orderedList: {
+          HTMLAttributes: { class: "list-decimal" },
+        },
+        bulletList: {
+          HTMLAttributes: { class: "list-disc" },
+        },
+        heading: { levels: [1, 2, 3, 4] },
+      }),
+      Placeholder.configure({
+        emptyNodeClass: "is-editor-empty",
+        placeholder: ({ node }) => {
+          switch (node.type.name) {
+            case "heading":
+              return `Heading ${node.attrs.level}`
+            case "codeBlock":
+              return ""
+            default:
+              return "Write, type '/' for commands"
+          }
+        },
+        includeChildren: false,
+      }),
+      TextAlign.configure({
+        types: ["heading", "paragraph"],
+      }),
+      TextStyle,
+      Underline,
+      Link,
+      Color,
+      Highlight.configure({
+        multicolor: true,
+      }),
+      Typography,
+      ImageExtension,
+      ImagePlaceholder.configure({
+        articleUuid // Pass articleUuid to the ImagePlaceholder extension
+      }),
+    ],
+    content: initialContent,
+    editorProps: {
+      attributes: {
+        class: "max-w-full focus:outline-none",
+      },
+    },
+    onUpdate: ({ editor }) => {
+      const content = getEditorContent(editor)
+      onUpdate?.(content)
+      updateStats(content)
+    },
+  })
+
+  // Set initial content if it changes externally
+  useEffect(() => {
+    if (!editor || !initialContent) return
+    
+    // Only update if content differs to avoid cursor jump
+    if (editor.getHTML() !== initialContent) {
+      editor.commands.setContent(initialContent)
+      updateStats(initialContent)
+    }
+  }, [editor, initialContent, updateStats])
+
+  // Call onEditorReady when editor is available
+  useEffect(() => {
+    if (editor && onEditorReady) {
+      onEditorReady(editor)
+    }
+  }, [editor, onEditorReady])
+
+  if (!editor) return null
+
+  return (
+    <div className="relative w-full overflow-hidden border bg-card">
+      <EditorToolbar editor={editor} />
+      <FloatingToolbar editor={editor} />
+      <TipTapFloatingMenu editor={editor} articleUuid={articleUuid} />
+      <EditorContent 
+        editor={editor} 
+        className="min-h-[500px] w-full cursor-text p-4 sm:p-6" 
+      />
+    </div>
+  )
+}
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/tiptap/tiptap.css
+---BEGIN FILE CONTENTS---
+:root {
+    /* Color System */
+    --editor-text-default: hsl(240 10% 3.9%);
+    --editor-text-gray: hsl(240 3.8% 46.1%);
+    --editor-bg-default: hsl(0 0% 100%);
+    --editor-bg-subtle: hsl(0 0% 98%);
+    --editor-bg-muted: hsl(240 5% 96%);
+    --editor-border-default: hsl(240 5% 88%);
+    --editor-border-strong: hsl(240 5% 65%);
+    
+    /* Spacing System */
+    --editor-spacing-1: 0.25rem;
+    --editor-spacing-2: 0.5rem;
+    --editor-spacing-4: 1rem;
+    --editor-spacing-6: 1.5rem;
+    --editor-spacing-8: 2rem;
+  }
+  
+  /* Dark Mode Custom Properties */
+  .dark {
+    --editor-text-default: hsl(0 0% 98%);
+    --editor-text-gray: hsl(240 5% 64.9%);
+    --editor-bg-default: hsl(240 10% 3.9%);
+    --editor-bg-subtle: hsl(240 3.7% 15.9%);
+    --editor-bg-muted: hsl(240 5% 26%);
+    --editor-border-default: hsl(240 5% 26%);
+    --editor-border-strong: hsl(240 5% 64.9%);
+  }
+  
+  /* Core Editor Styles */
+  .ProseMirror {
+    caret-color: var(--editor-text-default);
+    outline: none;
+    padding: var(--editor-spacing-4);
+    font-family: system-ui, -apple-system, sans-serif;
+    position: relative;
+    color: var(--editor-text-default);
+    min-height: 500px;
+  }
+  
+  .ProseMirror:focus {
+    outline: none;
+    box-shadow: none;
+  }
+  
+  /* Typography Styles */
+  .ProseMirror p {
+    line-height: 1.75;
+    margin: var(--editor-spacing-4) 0;
+    color: var(--editor-text-default);
+    font-size: 1.125rem;
+  }
+  
+  .ProseMirror h1,
+  .ProseMirror h2,
+  .ProseMirror h3,
+  .ProseMirror h4 {
+    font-weight: 700;
+    color: var(--editor-text-default);
+    line-height: 1.2;
+  }
+  
+  .ProseMirror h1 {
+    font-size: 2.5rem;
+    margin: var(--editor-spacing-8) 0 var(--editor-spacing-4);
+  }
+  
+  .ProseMirror h2 {
+    font-size: 2rem;
+    margin: var(--editor-spacing-8) 0 var(--editor-spacing-4);
+  }
+  
+  .ProseMirror h3 {
+    font-size: 1.5rem;
+    margin: var(--editor-spacing-6) 0 var(--editor-spacing-2);
+  }
+  
+  .ProseMirror h4 {
+    font-size: 1.25rem;
+    margin: var(--editor-spacing-4) 0 var(--editor-spacing-2);
+  }
+  
+  .ProseMirror a {
+    color: #2563eb;
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-thickness: 0.1em;
+    text-underline-offset: 0.2em;
+    transition: all 0.15s ease;
+  }
+  
+  .ProseMirror a:hover {
+    text-decoration-thickness: 0.2em;
+  }
+  
+  /* Lists */
+  .ProseMirror ul,
+  .ProseMirror ol {
+    margin: var(--editor-spacing-4) 0;
+    padding-left: var(--editor-spacing-6);
+  }
+  
+  .ProseMirror li {
+    margin: var(--editor-spacing-2) 0;
+    padding-left: var(--editor-spacing-2);
+  }
+  
+  /* Placeholder Styles */
+  .is-editor-empty::before {
+    color: var(--editor-text-gray);
+    content: attr(data-placeholder);
+    float: left;
+    height: 0;
+    pointer-events: none;
+  }
+  
+  /* Mobile Optimizations */
+  @media (max-width: 640px) {
+    .ProseMirror {
+      padding: var(--editor-spacing-4) var(--editor-spacing-2);
+    }
+  
+    .ProseMirror h1 {
+      font-size: 2rem;
+    }
+    .ProseMirror h2 {
+      font-size: 1.75rem;
+    }
+    .ProseMirror h3 {
+      font-size: 1.5rem;
+    }
+    .ProseMirror h4 {
+      font-size: 1.25rem;
+    }
+    .ProseMirror p {
+      font-size: 1rem;
+    }
+  }
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/tiptap/extensions/image.tsx
+---BEGIN FILE CONTENTS---
+"use client"
+
+import Image from "@tiptap/extension-image"
+import { NodeViewWrapper, ReactNodeViewRenderer } from "@tiptap/react"
+import { AlignCenter, AlignLeft, AlignRight, MoreVertical, Trash } from "lucide-react"
+import { useRef, useState } from "react"
+
+import { Button } from "@/components/ui/button"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import { cn } from "@/lib/utils"
+
+export const ImageExtension = Image.extend({
+  addAttributes() {
+    return {
+      src: {
+        default: null,
+      },
+      alt: {
+        default: null,
+      },
+      title: {
+        default: null,
+      },
+      width: {
+        default: "100%",
+      },
+      align: {
+        default: "center",
+      },
+      caption: {
+        default: "",
+      },
+    }
+  },
+
+  addNodeView() {
+    return ReactNodeViewRenderer(TiptapImage)
+  },
+})
+
+function TiptapImage(props: any) {
+  const { node, editor, selected, deleteNode, updateAttributes } = props
+  const imageRef = useRef<HTMLImageElement | null>(null)
+  const [resizing, setResizing] = useState(false)
+  const [resizingPosition, setResizingPosition] = useState<"left" | "right">("left")
+  const [resizeInitialWidth, setResizeInitialWidth] = useState(0)
+  const [resizeInitialMouseX, setResizeInitialMouseX] = useState(0)
+  
+  function handleResizingPosition({
+    e,
+    position,
+  }: {
+    e: React.MouseEvent<HTMLDivElement, MouseEvent>
+    position: "left" | "right"
+  }) {
+    startResize(e)
+    setResizingPosition(position)
+  }
+
+  function startResize(event: React.MouseEvent<HTMLDivElement>) {
+    event.preventDefault()
+    setResizing(true)
+    setResizeInitialMouseX(event.clientX)
+    if (imageRef.current) {
+      setResizeInitialWidth(imageRef.current.offsetWidth)
+    }
+  }
+
+  function resize(event: MouseEvent) {
+    if (!resizing) return
+
+    let dx = event.clientX - resizeInitialMouseX
+    if (resizingPosition === "left") {
+      dx = resizeInitialMouseX - event.clientX
+    }
+
+    const newWidth = Math.max(resizeInitialWidth + dx, 150)
+    updateAttributes({ width: newWidth })
+  }
+
+  function endResize() {
+    setResizing(false)
+    setResizeInitialMouseX(0)
+    setResizeInitialWidth(0)
+  }
+
+  // Set up event listeners for resize
+  // (Note: This would normally be in a useEffect)
+  if (typeof window !== 'undefined') {
+    window.addEventListener("mousemove", resize)
+    window.addEventListener("mouseup", endResize)
+  }
+
+  return (
+    <NodeViewWrapper
+      className={cn(
+        "relative flex flex-col rounded-md border-2 border-transparent transition-all duration-200",
+        selected ? "border-blue-300" : "",
+        node.attrs.align === "left" && "float-left mr-4",
+        node.attrs.align === "center" && "mx-auto",
+        node.attrs.align === "right" && "float-right ml-4",
+      )}
+      style={{ width: node.attrs.width }}
+    >
+      <div className="group relative flex flex-col rounded-md">
+        <figure className="relative m-0">
+          <img
+            ref={imageRef}
+            src={node.attrs.src}
+            alt={node.attrs.alt || ""}
+            title={node.attrs.title}
+            className="rounded-lg transition-shadow duration-200 hover:shadow-lg"
+          />
+          {editor?.isEditable && (
+            <>
+              <div
+                className="absolute inset-y-0 z-20 flex w-[25px] cursor-col-resize items-center justify-start p-2"
+                style={{ left: 0 }}
+                onMouseDown={(event) => {
+                  handleResizingPosition({ e: event, position: "left" })
+                }}
+              >
+                <div className="z-20 h-[70px] w-1 rounded-xl border bg-[rgba(0,0,0,0.65)] opacity-0 transition-all group-hover:opacity-100" />
+              </div>
+              <div
+                className="absolute inset-y-0 z-20 flex w-[25px] cursor-col-resize items-center justify-end p-2"
+                style={{ right: 0 }}
+                onMouseDown={(event) => {
+                  handleResizingPosition({ e: event, position: "right" })
+                }}
+              >
+                <div className="z-20 h-[70px] w-1 rounded-xl border bg-[rgba(0,0,0,0.65)] opacity-0 transition-all group-hover:opacity-100" />
+              </div>
+            </>
+          )}
+        </figure>
+
+        {node.attrs.caption && (
+          <div
+            className="mt-2 text-center text-sm text-muted-foreground"
+            onClick={() => editor?.isEditable && updateAttributes({ caption: prompt("Caption:", node.attrs.caption) || "" })}
+          >
+            {node.attrs.caption}
+          </div>
+        )}
+
+        {editor?.isEditable && (
+          <div className="absolute right-4 top-4 flex items-center gap-1 rounded-md border bg-background/80 p-1 opacity-0 backdrop-blur transition-opacity group-hover:opacity-100">
+            <Button
+              size="icon"
+              className={cn("size-7", node.attrs.align === "left" && "bg-accent")}
+              variant="ghost"
+              onClick={() => updateAttributes({ align: "left" })}
+            >
+              <AlignLeft className="size-4" />
+            </Button>
+            <Button
+              size="icon"
+              className={cn("size-7", node.attrs.align === "center" && "bg-accent")}
+              variant="ghost"
+              onClick={() => updateAttributes({ align: "center" })}
+            >
+              <AlignCenter className="size-4" />
+            </Button>
+            <Button
+              size="icon"
+              className={cn("size-7", node.attrs.align === "right" && "bg-accent")}
+              variant="ghost"
+              onClick={() => updateAttributes({ align: "right" })}
+            >
+              <AlignRight className="size-4" />
+            </Button>
+            
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="icon" className="size-7" variant="ghost">
+                  <MoreVertical className="size-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-44">
+                <DropdownMenuItem onClick={() => updateAttributes({ 
+                  caption: prompt("Caption:", node.attrs.caption || "") || ""
+                })}>
+                  Add/Edit Caption
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => updateAttributes({ 
+                  alt: prompt("Alt text:", node.attrs.alt || "") || ""
+                })}>
+                  Edit Alt Text
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem className="text-destructive" onClick={deleteNode}>
+                  <Trash className="mr-2 size-4" /> Delete Image
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        )}
+      </div>
+    </NodeViewWrapper>
+  )
+}
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/tiptap/extensions/image-placeholder.tsx
+---BEGIN FILE CONTENTS---
+"use client"
+
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { isValidUrl } from "@/lib/tiptap-utils"
+import {
+  type CommandProps,
+  Node,
+  NodeViewWrapper,
+  ReactNodeViewRenderer,
+  mergeAttributes,
+} from "@tiptap/react"
+import { Image, Link, Upload, Loader2, X } from "lucide-react"
+import { FormEvent, useState } from "react"
+import { useImageUpload } from "@/hooks/use-image-upload"
+import { cn } from "@/lib/utils"
+import { toast } from "@/components/ui/use-toast"
+
+export interface ImagePlaceholderOptions {
+  HTMLAttributes: Record<string, any>;
+  articleUuid: string;
+}
+
+declare module "@tiptap/core" {
+  interface Commands<ReturnType> {
+    imagePlaceholder: {
+      insertImagePlaceholder: () => ReturnType
+    }
+  }
+}
+
+export const ImagePlaceholder = Node.create<ImagePlaceholderOptions>({
+  name: "image-placeholder",
+
+  addOptions() {
+    return {
+      HTMLAttributes: {},
+      articleUuid: '',
+    }
+  },
+
+  group: "block",
+
+  parseHTML() {
+    return [{ tag: `div[data-type="${this.name}"]` }]
+  },
+
+  renderHTML({ HTMLAttributes }) {
+    return ["div", mergeAttributes(HTMLAttributes)]
+  },
+
+  addNodeView() {
+    return ReactNodeViewRenderer(ImagePlaceholderComponent)
+  },
+
+  addCommands() {
+    return {
+      insertImagePlaceholder: () => (props: CommandProps) => {
+        return props.commands.insertContent({
+          type: "image-placeholder",
+        })
+      },
+    }
+  },
+})
+
+function ImagePlaceholderComponent(props: any) {
+  const { editor } = props
+  const [isExpanded, setIsExpanded] = useState(false)
+  const [activeTab, setActiveTab] = useState<"upload" | "url">("upload")
+  const [url, setUrl] = useState("")
+  const [altText, setAltText] = useState("")
+  const [urlError, setUrlError] = useState(false)
+  const [isDragActive, setIsDragActive] = useState(false)
+  const [uploadStatus, setUploadStatus] = useState<"idle" | "uploading" | "success" | "error">("idle")
+
+  // Get articleUuid from extension options or editor storage
+  const articleUuid = props.extension?.options?.articleUuid || 
+                      editor?.storage?.imagePlaceholder?.articleUuid || 
+                      '';
+
+  const { previewUrl, fileInputRef, handleFileChange, handleRemove, uploading, error } = useImageUpload({
+    articleUuid, 
+    onUpload: (imageUrl) => {
+      // Show success message
+      toast({
+        title: "Upload Complete",
+        description: "Image uploaded successfully",
+      });
+      
+      setUploadStatus("success");
+      
+      // Insert image at current position
+      setTimeout(() => {
+        if (editor) {
+          editor.chain()
+            .focus()
+            .setImage({ 
+              src: imageUrl, 
+              alt: altText || fileInputRef.current?.files?.[0]?.name 
+            })
+            .run();
+          
+          // Delete the placeholder node AFTER inserting the image
+          setTimeout(() => {
+            props.deleteNode();
+          }, 100);
+        }
+      }, 100);
+    },
+    onError: (errorMsg) => {
+      console.error("Image upload error:", errorMsg);
+      setUploadStatus("error");
+      toast({
+        title: "Upload Failed",
+        description: errorMsg || "Failed to upload image",
+        variant: "destructive",
+      });
+    }
+  });
+
+  // Handle file input change with custom implementation
+  const customHandleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    setUploadStatus("uploading");
+    await handleFileChange(e);
+  };
+
+  const handleDragEnter = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragActive(true)
+  }
+
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragActive(false)
+  }
+
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+  }
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragActive(false)
+    setUploadStatus("uploading");
+
+    const file = e.dataTransfer.files[0]
+    if (file) {
+      const input = fileInputRef.current
+      if (input) {
+        const dataTransfer = new DataTransfer()
+        dataTransfer.items.add(file)
+        input.files = dataTransfer.files
+        handleFileChange({ target: input } as any)
+      }
+    }
+  }
+
+  const handleInsertEmbed = (e: FormEvent) => {
+    e.preventDefault()
+    const valid = isValidUrl(url)
+    if (!valid) {
+      setUrlError(true)
+      return
+    }
+    if (url) {
+      editor.chain().focus().setImage({ src: url, alt: altText }).run()
+      // Short delay before removing placeholder
+      setTimeout(() => props.deleteNode(), 100);
+    }
+  }
+
+  return (
+    <NodeViewWrapper className="w-full my-4">
+      <div className="relative">
+        {!isExpanded ? (
+          <div
+            onClick={() => setIsExpanded(true)}
+            className={cn(
+              "group relative flex cursor-pointer flex-col items-center gap-4 rounded-lg border-2 border-dashed p-8 transition-all hover:bg-accent",
+              props.selected && "border-primary bg-primary/5",
+              isDragActive && "border-primary bg-primary/5",
+              error && "border-destructive bg-destructive/5",
+            )}
+            onDragEnter={handleDragEnter}
+            onDragLeave={handleDragLeave}
+            onDragOver={handleDragOver}
+            onDrop={handleDrop}
+          >
+            <div className="rounded-full bg-background p-4 shadow-sm transition-colors group-hover:bg-accent">
+              <Image className="h-6 w-6" />
+            </div>
+            <div className="text-center">
+              <p className="text-sm font-medium">Click to upload or drag and drop</p>
+              <p className="text-xs text-muted-foreground">SVG, PNG, JPG or GIF</p>
+            </div>
+          </div>
+        ) : (
+          <div className="rounded-lg border bg-card p-4 shadow-sm">
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="text-lg font-semibold">Add Image</h3>
+              <Button variant="ghost" size="icon" onClick={() => props.deleteNode()}>
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+
+            <Tabs value={activeTab} onValueChange={(v: any) => setActiveTab(v)} className="w-full">
+              <TabsList className="grid w-full grid-cols-2">
+                <TabsTrigger value="upload">
+                  <Upload className="mr-2 h-4 w-4" />
+                  Upload
+                </TabsTrigger>
+                <TabsTrigger value="url">
+                  <Link className="mr-2 h-4 w-4" />
+                  URL
+                </TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="upload">
+                <div
+                  onDragEnter={handleDragEnter}
+                  onDragLeave={handleDragLeave}
+                  onDragOver={handleDragOver}
+                  onDrop={handleDrop}
+                  className={cn(
+                    "my-4 rounded-lg border-2 border-dashed p-8 text-center transition-colors",
+                    isDragActive && "border-primary bg-primary/10",
+                    error && "border-destructive bg-destructive/10",
+                  )}
+                >
+                  {previewUrl ? (
+                    <div className="space-y-4">
+                      <img src={previewUrl} alt="Preview" className="mx-auto max-h-[200px] rounded-lg object-cover" />
+                      <div className="space-y-2">
+                        <Input
+                          value={altText}
+                          onChange={(e) => setAltText(e.target.value)}
+                          placeholder="Alt text (optional)"
+                        />
+                      </div>
+                      
+                      {uploadStatus === "uploading" && (
+                        <div className="flex items-center justify-center space-x-2 text-sm text-muted-foreground">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          <span>Uploading image...</span>
+                        </div>
+                      )}
+                      
+                      {uploadStatus === "success" && (
+                        <div className="text-sm text-green-600">
+                          Upload complete! Inserting image...
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="image/*"
+                        onChange={customHandleFileChange}
+                        className="hidden"
+                        id="image-upload"
+                      />
+                      <label htmlFor="image-upload" className="flex cursor-pointer flex-col items-center gap-4">
+                        <Upload className="h-8 w-8 text-muted-foreground" />
+                        <div>
+                          <p className="text-sm font-medium">Click to upload or drag and drop</p>
+                          <p className="text-xs text-muted-foreground">SVG, PNG, JPG or GIF</p>
+                        </div>
+                      </label>
+                    </>
+                  )}
+                  {error && <p className="mt-2 text-sm text-destructive">{error}</p>}
+                </div>
+              </TabsContent>
+
+              <TabsContent value="url">
+                <div className="space-y-4 py-4">
+                  <div className="space-y-2">
+                    <Input
+                      value={url}
+                      onChange={(e) => {
+                        setUrl(e.target.value)
+                        if (urlError) setUrlError(false)
+                      }}
+                      placeholder="Enter image URL..."
+                    />
+                    {urlError && <p className="text-xs text-destructive">Please enter a valid URL</p>}
+                  </div>
+                  <div className="space-y-2">
+                    <Input
+                      value={altText}
+                      onChange={(e) => setAltText(e.target.value)}
+                      placeholder="Alt text (optional)"
+                    />
+                  </div>
+                  <Button onClick={handleInsertEmbed} className="w-full" disabled={!url}>
+                    Add Image
+                  </Button>
+                </div>
+              </TabsContent>
+            </Tabs>
+          </div>
+        )}
+      </div>
+    </NodeViewWrapper>
+  )
+}
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/tiptap/extensions/editor-toolbar.tsx
+---BEGIN FILE CONTENTS---
+import { Separator } from "@/components/ui/separator"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { TooltipProvider } from "@/components/ui/tooltip"
+import { ToolbarProvider } from "@/components/tiptap/toolbars/toolbar-provider"
+import type { Editor } from "@tiptap/core"
+import { BoldToolbar } from "@/components/tiptap/toolbars/bold"
+import { ItalicToolbar } from "@/components/tiptap/toolbars/italic"
+import { ImagePlaceholderToolbar } from "@/components/tiptap/extensions/image-placeholder-toolbar"
+import { AlignLeft, AlignCenter, AlignRight, Heading1, Heading2, Heading3, List, ListOrdered, Code, Quote, Undo, Redo, Link as LinkIcon } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { cn } from "@/lib/utils"
+
+export const EditorToolbar = ({ editor }: { editor: Editor }) => {
+  if (!editor) return null
+
+  return (
+    <div className="sticky top-0 z-20 w-full border-b bg-background">
+      <ToolbarProvider editor={editor}>
+        <TooltipProvider>
+          <ScrollArea className="h-fit py-0.5 overflow-x-auto">
+            <div className="flex items-center gap-0.5 px-2 py-1">
+              {/* History Group */}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 p-0 sm:h-9 sm:w-9"
+                onClick={() => editor.chain().focus().undo().run()}
+                disabled={!editor.can().chain().focus().undo().run()}
+              >
+                <Undo className="h-4 w-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 p-0 sm:h-9 sm:w-9"
+                onClick={() => editor.chain().focus().redo().run()}
+                disabled={!editor.can().chain().focus().redo().run()}
+              >
+                <Redo className="h-4 w-4" />
+              </Button>
+              <Separator orientation="vertical" className="mx-1 h-7" />
+
+              {/* Text Structure Group */}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className={cn("h-8 w-8 p-0 sm:h-9 sm:w-9", editor.isActive('heading', { level: 1 }) && "bg-accent")}
+                    onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
+                  >
+                    <Heading1 className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Heading 1</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className={cn("h-8 w-8 p-0 sm:h-9 sm:w-9", editor.isActive('heading', { level: 2 }) && "bg-accent")}
+                    onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
+                  >
+                    <Heading2 className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Heading 2</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className={cn("h-8 w-8 p-0 sm:h-9 sm:w-9", editor.isActive('heading', { level: 3 }) && "bg-accent")}
+                    onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
+                  >
+                    <Heading3 className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Heading 3</TooltipContent>
+              </Tooltip>
+              <Separator orientation="vertical" className="mx-1 h-7" />
+
+              {/* Basic Formatting Group */}
+              <BoldToolbar />
+              <ItalicToolbar />
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className={cn("h-8 w-8 p-0 sm:h-9 sm:w-9", editor.isActive('link') && "bg-accent")}
+                    onClick={() => {
+                      const previousUrl = editor.getAttributes('link').href;
+                      const url = window.prompt('URL', previousUrl);
+                      
+                      if (url === null) {
+                        return;
+                      }
+                      
+                      if (url === '') {
+                        editor.chain().focus().unsetLink().run();
+                        return;
+                      }
+                      
+                      editor.chain().focus().setLink({ href: url }).run();
+                    }}
+                  >
+                    <LinkIcon className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Link</TooltipContent>
+              </Tooltip>
+              <Separator orientation="vertical" className="mx-1 h-7" />
+
+              {/* Lists & Structure Group */}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className={cn("h-8 w-8 p-0 sm:h-9 sm:w-9", editor.isActive('bulletList') && "bg-accent")}
+                    onClick={() => editor.chain().focus().toggleBulletList().run()}
+                  >
+                    <List className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Bullet List</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className={cn("h-8 w-8 p-0 sm:h-9 sm:w-9", editor.isActive('orderedList') && "bg-accent")}
+                    onClick={() => editor.chain().focus().toggleOrderedList().run()}
+                  >
+                    <ListOrdered className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Numbered List</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className={cn("h-8 w-8 p-0 sm:h-9 sm:w-9", editor.isActive('blockquote') && "bg-accent")}
+                    onClick={() => editor.chain().focus().toggleBlockquote().run()}
+                  >
+                    <Quote className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Blockquote</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className={cn("h-8 w-8 p-0 sm:h-9 sm:w-9", editor.isActive('codeBlock') && "bg-accent")}
+                    onClick={() => editor.chain().focus().toggleCodeBlock().run()}
+                  >
+                    <Code className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Code Block</TooltipContent>
+              </Tooltip>
+              <Separator orientation="vertical" className="mx-1 h-7" />
+
+              {/* Alignment Group */}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className={cn("h-8 w-8 p-0 sm:h-9 sm:w-9", editor.isActive({ textAlign: 'left' }) && "bg-accent")}
+                    onClick={() => editor.chain().focus().setTextAlign('left').run()}
+                  >
+                    <AlignLeft className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Align Left</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className={cn("h-8 w-8 p-0 sm:h-9 sm:w-9", editor.isActive({ textAlign: 'center' }) && "bg-accent")}
+                    onClick={() => editor.chain().focus().setTextAlign('center').run()}
+                  >
+                    <AlignCenter className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Align Center</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className={cn("h-8 w-8 p-0 sm:h-9 sm:w-9", editor.isActive({ textAlign: 'right' }) && "bg-accent")}
+                    onClick={() => editor.chain().focus().setTextAlign('right').run()}
+                  >
+                    <AlignRight className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Align Right</TooltipContent>
+              </Tooltip>
+              <Separator orientation="vertical" className="mx-1 h-7" />
+
+              {/* Media Group */}
+              <ImagePlaceholderToolbar />
+            </div>
+          </ScrollArea>
+        </TooltipProvider>
+      </ToolbarProvider>
+    </div>
+  )
+}
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/tiptap/extensions/floating-toolbar.tsx
+---BEGIN FILE CONTENTS---
+"use client"
+
+import { BubbleMenu, type Editor } from "@tiptap/react"
+import { ToolbarProvider } from "@/components/tiptap/toolbars/toolbar-provider"
+import { TooltipProvider } from "@/components/ui/tooltip"
+import { BoldToolbar } from "../toolbars/bold"
+import { ItalicToolbar } from "../toolbars/italic"
+import { AlignLeft, AlignCenter, AlignRight, Link as LinkIcon } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { cn } from "@/lib/utils"
+import { Separator } from "@/components/ui/separator"
+
+export function FloatingToolbar({ editor }: { editor: Editor | null }) {
+  if (!editor) return null
+
+  return (
+    <TooltipProvider>
+      <BubbleMenu
+        tippyOptions={{
+          duration: 100,
+          placement: "top",
+        }}
+        shouldShow={({ editor, state }) => {
+          const { selection } = state
+          const { empty } = selection
+          
+          // Don't show menu for image selections or when there's no text selected
+          return !empty && 
+                 editor.isEditable && 
+                 !editor.isActive('image') && 
+                 !editor.isActive('codeBlock')
+        }}
+        editor={editor}
+        className="flex overflow-hidden rounded-md border bg-background shadow-md"
+      >
+        <ToolbarProvider editor={editor}>
+          <div className="flex items-center gap-1 p-1">
+            <BoldToolbar />
+            <ItalicToolbar />
+            <Separator orientation="vertical" className="mx-1 h-6" />
+            
+            <Button
+              variant="ghost"
+              size="icon"
+              className={cn("h-8 w-8 p-0", editor.isActive('link') && "bg-accent")}
+              onClick={() => {
+                const previousUrl = editor.getAttributes('link').href;
+                const url = window.prompt('URL', previousUrl);
+                
+                if (url === null) {
+                  return;
+                }
+                
+                if (url === '') {
+                  editor.chain().focus().unsetLink().run();
+                  return;
+                }
+                
+                editor.chain().focus().setLink({ href: url }).run();
+              }}
+            >
+              <LinkIcon className="h-4 w-4" />
+            </Button>
+            
+            <Separator orientation="vertical" className="mx-1 h-6" />
+            
+            <Button
+              variant="ghost"
+              size="icon"
+              className={cn("h-8 w-8 p-0", editor.isActive({ textAlign: 'left' }) && "bg-accent")}
+              onClick={() => editor.chain().focus().setTextAlign('left').run()}
+            >
+              <AlignLeft className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className={cn("h-8 w-8 p-0", editor.isActive({ textAlign: 'center' }) && "bg-accent")}
+              onClick={() => editor.chain().focus().setTextAlign('center').run()}
+            >
+              <AlignCenter className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className={cn("h-8 w-8 p-0", editor.isActive({ textAlign: 'right' }) && "bg-accent")}
+              onClick={() => editor.chain().focus().setTextAlign('right').run()}
+            >
+              <AlignRight className="h-4 w-4" />
+            </Button>
+          </div>
+        </ToolbarProvider>
+      </BubbleMenu>
+    </TooltipProvider>
+  )
+}
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/tiptap/extensions/floating-menu.tsx
+---BEGIN FILE CONTENTS---
+"use client"
+
+import { FloatingMenu, type Editor } from "@tiptap/react"
+import {
+  Heading1,
+  Heading2,
+  Heading3,
+  List,
+  ListOrdered,
+  Image as ImageIcon,
+  Code,
+  Quote,
+  Table,
+  Minus,
+  CheckSquare,
+} from "lucide-react"
+import { cn } from "@/lib/utils"
+
+interface CommandItem {
+  title: string
+  description: string
+  icon: React.ReactNode
+  command: (editor: Editor) => void
+}
+
+interface TipTapFloatingMenuProps {
+  editor: Editor
+  articleUuid?: string // Add articleUuid prop
+}
+
+export function TipTapFloatingMenu({ editor, articleUuid }: TipTapFloatingMenuProps) {
+  if (!editor) return null
+
+  // Store articleUuid in editor storage for access by other components
+  if (articleUuid) {
+    editor.storage.imagePlaceholder = {
+      ...editor.storage.imagePlaceholder,
+      articleUuid
+    }
+  }
+
+  const items: CommandItem[] = [
+    {
+      title: "Heading 1",
+      description: "Large section heading",
+      icon: <Heading1 className="h-4 w-4" />,
+      command: (editor) => editor.chain().focus().toggleHeading({ level: 1 }).run(),
+    },
+    {
+      title: "Heading 2",
+      description: "Medium section heading",
+      icon: <Heading2 className="h-4 w-4" />,
+      command: (editor) => editor.chain().focus().toggleHeading({ level: 2 }).run(),
+    },
+    {
+      title: "Heading 3",
+      description: "Small section heading",
+      icon: <Heading3 className="h-4 w-4" />,
+      command: (editor) => editor.chain().focus().toggleHeading({ level: 3 }).run(),
+    },
+    {
+      title: "Bullet List",
+      description: "Create a simple bullet list",
+      icon: <List className="h-4 w-4" />,
+      command: (editor) => editor.chain().focus().toggleBulletList().run(),
+    },
+    {
+      title: "Numbered List",
+      description: "Create a numbered list",
+      icon: <ListOrdered className="h-4 w-4" />,
+      command: (editor) => editor.chain().focus().toggleOrderedList().run(),
+    },
+    {
+      title: "Image",
+      description: "Upload or embed an image",
+      icon: <ImageIcon className="h-4 w-4" />,
+      command: (editor) => editor.chain().focus().insertImagePlaceholder().run(),
+    },
+    {
+      title: "Code Block",
+      description: "Add a code block",
+      icon: <Code className="h-4 w-4" />,
+      command: (editor) => editor.chain().focus().toggleCodeBlock().run(),
+    },
+    {
+      title: "Blockquote",
+      description: "Add a quote",
+      icon: <Quote className="h-4 w-4" />,
+      command: (editor) => editor.chain().focus().toggleBlockquote().run(),
+    },
+    {
+      title: "Horizontal Rule",
+      description: "Add a horizontal divider",
+      icon: <Minus className="h-4 w-4" />,
+      command: (editor) => editor.chain().focus().setHorizontalRule().run(),
+    },
+  ]
+
+  return (
+    <FloatingMenu
+      editor={editor}
+      tippyOptions={{ duration: 100 }}
+      className="flex overflow-hidden rounded-md border bg-background shadow-md max-w-xs w-full"
+      shouldShow={({ state }) => {
+        const { selection } = state
+        const { $anchor, empty } = selection
+        
+        // Only show when typing '/' at the start of an empty paragraph
+        const isSlash = $anchor.parent.textContent[0] === '/'
+        return (
+          empty &&
+          $anchor.parent.type.name === 'paragraph' &&
+          $anchor.parent.content.size <= 1 &&
+          isSlash
+        )
+      }}
+    >
+      <div className="flex flex-col w-full p-1">
+        {items.map((item, index) => (
+          <button
+            key={index}
+            onClick={() => {
+              // Delete the '/' character
+              editor.commands.deleteRange({
+                from: editor.state.selection.anchor - 1,
+                to: editor.state.selection.anchor,
+              })
+              // Execute the command
+              item.command(editor)
+            }}
+            className={cn(
+              "flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent text-left"
+            )}
+          >
+            <div className="flex h-8 w-8 items-center justify-center rounded-sm border bg-background">
+              {item.icon}
+            </div>
+            <div>
+              <p className="font-medium">{item.title}</p>
+              <p className="text-xs text-muted-foreground">{item.description}</p>
+            </div>
+          </button>
+        ))}
+      </div>
+    </FloatingMenu>
+  )
+}
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/tiptap/toolbars/image-placeholder-toolbar.tsx
+---BEGIN FILE CONTENTS---
+"use client"
+
+import { Image } from "lucide-react"
+import React from "react"
+
+import { Button, type ButtonProps } from "@/components/ui/button"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { cn } from "@/lib/utils"
+import { useToolbar } from "./toolbar-provider"
+
+export const ImagePlaceholderToolbar = React.forwardRef<HTMLButtonElement, ButtonProps>(
+  ({ className, onClick, children, ...props }, ref) => {
+    const { editor } = useToolbar()
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className={cn("h-8 w-8 p-0 sm:h-9 sm:w-9", className)}
+            onClick={(e) => {
+              editor?.chain().focus().insertImagePlaceholder().run()
+              onClick?.(e)
+            }}
+            ref={ref}
+            {...props}
+          >
+            {children ?? <Image className="h-4 w-4" />}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>
+          <span>Insert Image</span>
+        </TooltipContent>
+      </Tooltip>
+    )
+  },
+)
+
+ImagePlaceholderToolbar.displayName = "ImagePlaceholderToolbar"
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/tiptap/toolbars/editor-toolbar.tsx
+---BEGIN FILE CONTENTS---
+import { Separator } from "@/components/ui/separator"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { TooltipProvider } from "@/components/ui/tooltip"
+import { ToolbarProvider } from "./toolbar-provider"
+import type { Editor } from "@tiptap/core"
+
+// For now, implementing a minimal toolbar until we add all the buttons
+export const EditorToolbar = ({ editor }: { editor: Editor }) => {
+  return (
+    <div className="sticky top-0 z-20 w-full border-b bg-background">
+      <ToolbarProvider editor={editor}>
+        <TooltipProvider>
+          <ScrollArea className="h-fit py-0.5">
+            <div className="flex items-center gap-1 px-2">
+              {/* We'll add toolbar buttons here in the next steps */}
+              <div className="p-2 text-sm text-muted-foreground">
+                Editor toolbar - We'll add buttons here
+              </div>
+            </div>
+          </ScrollArea>
+        </TooltipProvider>
+      </ToolbarProvider>
+    </div>
+  )
+}
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/tiptap/toolbars/toolbar-provider.tsx
+---BEGIN FILE CONTENTS---
+"use client"
+
+import { type Editor } from "@tiptap/react"
+import React, { createContext, useContext } from "react"
+
+interface ToolbarContextType {
+  editor: Editor | null
+}
+
+const ToolbarContext = createContext<ToolbarContextType>({ editor: null })
+
+export function ToolbarProvider({
+  editor,
+  children,
+}: {
+  editor: Editor | null
+  children: React.ReactNode
+}) {
+  return (
+    <ToolbarContext.Provider value={{ editor }}>
+      {children}
+    </ToolbarContext.Provider>
+  )
+}
+
+export function useToolbar() {
+  const context = useContext(ToolbarContext)
+  if (context === undefined) {
+    throw new Error("useToolbar must be used within a ToolbarProvider")
+  }
+  return context
+}
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/tiptap/toolbars/italic.tsx
+---BEGIN FILE CONTENTS---
+"use client"
+
+import { Italic } from "lucide-react"
+import React from "react"
+
+import { Button, type ButtonProps } from "@/components/ui/button"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { cn } from "@/lib/utils"
+import { useToolbar } from "./toolbar-provider"
+
+export const ItalicToolbar = React.forwardRef<HTMLButtonElement, ButtonProps>(
+  ({ className, onClick, children, ...props }, ref) => {
+    const { editor } = useToolbar()
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className={cn("h-8 w-8 p-0 sm:h-9 sm:w-9", editor?.isActive("italic") && "bg-accent", className)}
+            onClick={(e) => {
+              editor?.chain().focus().toggleItalic().run()
+              onClick?.(e)
+            }}
+            disabled={!editor?.can().chain().focus().toggleItalic().run()}
+            ref={ref}
+            {...props}
+          >
+            {children ?? <Italic className="h-4 w-4" />}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>
+          <span>Italic</span>
+        </TooltipContent>
+      </Tooltip>
+    )
+  },
+)
+
+ItalicToolbar.displayName = "ItalicToolbar"
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/components/tiptap/toolbars/bold.tsx
+---BEGIN FILE CONTENTS---
+"use client"
+
+import { Bold } from "lucide-react"
+import React from "react"
+
+import { Button, type ButtonProps } from "@/components/ui/button"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { cn } from "@/lib/utils"
+import { useToolbar } from "./toolbar-provider"
+
+export const BoldToolbar = React.forwardRef<HTMLButtonElement, ButtonProps>(
+  ({ className, onClick, children, ...props }, ref) => {
+    const { editor } = useToolbar()
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className={cn("h-8 w-8 p-0 sm:h-9 sm:w-9", editor?.isActive("bold") && "bg-accent", className)}
+            onClick={(e) => {
+              editor?.chain().focus().toggleBold().run()
+              onClick?.(e)
+            }}
+            disabled={!editor?.can().chain().focus().toggleBold().run()}
+            ref={ref}
+            {...props}
+          >
+            {children ?? <Bold className="h-4 w-4" />}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>
+          <span>Bold</span>
+        </TooltipContent>
+      </Tooltip>
+    )
+  },
+)
+
+BoldToolbar.displayName = "BoldToolbar"
+---END FILE CONTENTS---
+
+
+FILE: /home/rick110/Downloads/110/madwanzi1/resources/js/pages/articles/editor.tsx
+---BEGIN FILE CONTENTS---
+"use client"
+
+import type React from "react"
+import { Head, Link, router, useForm, usePage } from "@inertiajs/react"
+import {
+  ArrowLeft,
+  Calendar,
+  Clock,
+  Eye,
+  ImageIcon,
+  Save,
+  Upload,
+  FileImage,
+  CalendarDays,
+} from "lucide-react"
+import { useCallback, useState, useRef, useEffect } from "react"
+import debounce from "lodash/debounce"
+import axios from "axios"
+import DOMPurify from "dompurify"
+
+import AppLayout from "@/layouts/app-layout"
+import type { BreadcrumbItem } from "@/types"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+  DialogClose,
+} from "@/components/ui/dialog"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { toast } from "@/components/ui/use-toast"
+import { Separator } from "@/components/ui/separator"
+import { RichTextEditor } from "@/components/tiptap/rich-text-editor"
+import { htmlToPlainText } from "@/lib/tiptap-utils"
+import { Editor as TiptapEditor } from '@tiptap/react'
+
+// Define types for props and article
+interface ArticleData {
+  id: number;
+  uuid: string;
+  title: string;
+  content: string;
+  status: string;
+  word_count: number;
+  reading_time: number;
+  slug: string;
+}
+
+interface EditorProps {
+  article: ArticleData;
+  isNewArticle: boolean;
+}
+
+export default function Editor({ article, isNewArticle }: EditorProps) {
+  const [isSaving, setIsSaving] = useState(false);
+  const [wordCount, setWordCount] = useState(article.word_count || 0);
+  const [readingTime, setReadingTime] = useState(article.reading_time || 0);
+  const [previewUrl, setPreviewUrl] = useState('');
+  const [showPreviewLink, setShowPreviewLink] = useState(false);
+  const [showScheduleDialog, setShowScheduleDialog] = useState(false);
+  const [scheduledDate, setScheduledDate] = useState<string>('');
+  const [scheduledTime, setScheduledTime] = useState<string>('12:00');
+  const [editor, setEditor] = useState<TiptapEditor | null>(null);
+  const [isPublishing, setIsPublishing] = useState(false);
+  
+  // Breadcrumb items for navigation
+  const breadcrumbItems: BreadcrumbItem[] = [
+    { title: "Dashboard", href: route("dashboard") },
+    { title: "Articles", href: route("articles.index") },
+    { title: isNewArticle ? "New Article" : "Edit Article", href: "#" },
+  ];
+
+  // Setup form with Inertia
+  const { data, setData, errors } = useForm<{
+    uuid: string;
+    title: string;
+    content: string;
+  }>({
+    uuid: article.uuid,
+    title: article.title || '',
+    content: article.content || '',
+  });
+
+  const debouncedSaveTitle = useCallback(
+    debounce(async (title: string) => {
+      try {
+        setIsSaving(true);
+        const response = await axios.patch(`/articles/${article.uuid}/title`, {
+          uuid: article.uuid,
+          title,
+        });
+        setIsSaving(false);
+        toast({
+          title: "Success",
+          description: "Title saved successfully",
+        });
+      } catch (error) {
+        setIsSaving(false);
+        console.error('Error saving title:', error);
+        toast({
+          title: "Error",
+          description: "Failed to save title",
+          variant: "destructive",
+        });
+      }
+    }, 1000),
+    [article.uuid]
+  );
+
+  // Save article content with debounce
+  const debouncedSaveContent = useCallback(
+    debounce(async (content: string) => {
+      try {
+        setIsSaving(true);
+        const response = await axios.patch(`/articles/${article.uuid}/content`, {
+          uuid: article.uuid,
+          content,
+        });
+        
+        if (response.data.success) {
+          setWordCount(response.data.word_count);
+          setReadingTime(response.data.reading_time);
+        }
+        
+        setIsSaving(false);
+        toast({
+          title: "Success",
+          description: "Content saved",
+        });
+      } catch (error) {
+        setIsSaving(false);
+        console.error('Error saving content:', error);
+        toast({
+          title: "Error",
+          description: "Failed to save content",
+          variant: "destructive",
+        });
+      }
+    }, 1000),
+    [article.uuid]
+  );
+
+  // Handle title change
+  const handleTitleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newTitle = e.target.value;
+    setData('title', newTitle);
+    debouncedSaveTitle(newTitle);
+  };
+
+  // Handle content change (from TipTap)
+  const handleContentChange = (content: string) => {
+    setData('content', content);
+    debouncedSaveContent(content);
+  };
+
+  // Generate preview link
+  const handleGeneratePreview = async () => {
+    try {
+      const response = await axios.post('/articles/preview', {
+        uuid: article.uuid,
+      });
+      
+      if (response.data.preview_url) {
+        setPreviewUrl(response.data.preview_url);
+        setShowPreviewLink(true);
+        window.open(response.data.preview_url, '_blank');
+        
+        toast({
+          title: "Preview Ready",
+          description: "Article preview has been generated",
+        });
+      }
+    } catch (error) {
+      console.error('Error generating preview:', error);
+      toast({
+        title: "Error",
+        description: "Failed to generate preview",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Schedule article for future publication
+  const handleScheduleArticle = async () => {
+    if (!data.title.trim() || !data.content.trim()) {
+      toast({
+        title: "Missing Content",
+        description: "Please add a title and content before scheduling",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!scheduledDate) {
+      toast({
+        title: "Missing Date",
+        description: "Please select a publication date",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      // Create a date object from the selected date and time
+      const scheduledDateTime = new Date(`${scheduledDate}T${scheduledTime}`);
+      
+      // Check if the date is valid and in the future
+      if (isNaN(scheduledDateTime.getTime()) || scheduledDateTime <= new Date()) {
+        toast({
+          title: "Invalid Date",
+          description: "Please select a date and time in the future",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const response = await axios.post(`/articles/${article.uuid}/schedule`, {
+        uuid: article.uuid,
+        scheduled_at: scheduledDateTime.toISOString(),
+      });
+      
+      if (response.data.success) {
+        setShowScheduleDialog(false);
+        toast({
+          title: "Article Scheduled",
+          description: response.data.message || "Your article has been scheduled for publication",
+        });
+        // Redirect to the articles index page
+        router.visit(route('articles.index'));
+      } else {
+        toast({
+          title: "Error",
+          description: response.data.message || "Failed to schedule article",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      console.error('Error scheduling article:', error);
+      toast({
+        title: "Error",
+        description: "Failed to schedule article",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Publish article
+  const handlePublish = async () => {
+    if (!data.title.trim() || !data.content.trim()) {
+      toast({
+        title: "Missing Content",
+        description: "Please add a title and content before publishing",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      setIsPublishing(true);
+      
+      // Add a debug toast
+      toast({
+        title: "Publishing...",
+        description: "Sending request to publish article",
+      });
+      
+      const response = await axios.post(`/articles/${article.uuid}/publish`, {
+        uuid: article.uuid,
+      });
+      
+      console.log("Publish response:", response.data);
+      
+      if (response.data.success) {
+        toast({
+          title: "Published",
+          description: "Your article has been published successfully",
+        });
+        
+        // Add a short delay before navigation
+        setTimeout(() => {
+          // Navigate to the published article
+          if (response.data.article_url) {
+            window.location.href = response.data.article_url;
+          } else {
+            // Fallback to articles list
+            window.location.href = route('articles.index');
+          }
+        }, 500);
+      } else {
+        toast({
+          title: "Error",
+          description: response.data.message || "Failed to publish article",
+          variant: "destructive",
+        });
+        setIsPublishing(false);
+      }
+    } catch (error: any) {
+      console.error('Error publishing article:', error);
+      toast({
+        title: "Error",
+        description: error.response?.data?.message || "Failed to publish article",
+        variant: "destructive",
+      });
+      setIsPublishing(false);
+    }
+  };
+
+  // Get tomorrow's date in YYYY-MM-DD format for the date input min value
+  const getTomorrowDateString = () => {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    return tomorrow.toISOString().split('T')[0];
+  };
+
+  return (
+    <AppLayout breadcrumbs={breadcrumbItems}>
+      <Head title={data.title || 'New Article'} />
+
+      <div className="container mx-auto py-6">
+        {/* Header section with actions */}
+        <div className="flex items-center justify-between mb-6">
+          <div className="flex items-center gap-2">
+            <Link href={route('articles.index')} className="mr-2">
+              <Button variant="outline" size="sm">
+                <ArrowLeft className="w-4 h-4 mr-2" />
+                Back
+              </Button>
+            </Link>
+            <h1 className="text-2xl font-bold">
+              {isNewArticle ? 'Create Article' : 'Edit Article'}
+            </h1>
+          </div>
+          
+          <div className="flex items-center gap-2">
+            {isSaving && (
+              <div className="flex items-center text-sm text-muted-foreground">
+                <Save className="w-4 h-4 mr-1 animate-pulse" />
+                Saving...
+              </div>
+            )}
+            <Button 
+              variant="outline" 
+              size="sm" 
+              onClick={handleGeneratePreview}
+            >
+              <Eye className="w-4 h-4 mr-2" />
+              Preview
+            </Button>
+            
+            {/* Schedule Button */}
+            <Button 
+              variant="outline" 
+              size="sm" 
+              onClick={() => setShowScheduleDialog(true)}
+            >
+              <CalendarDays className="w-4 h-4 mr-2" />
+              Schedule
+            </Button>
+            
+            {/* Publish Button */}
+            <Button 
+              variant="default" 
+              size="sm" 
+              onClick={handlePublish}
+              disabled={isPublishing}
+            >
+              {isPublishing ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Publishing...
+                </>
+              ) : (
+                'Publish'
+              )}
+            </Button>
+          </div>
+        </div>
+
+        {/* Schedule dialog */}
+        <Dialog open={showScheduleDialog} onOpenChange={setShowScheduleDialog}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Schedule Publication</DialogTitle>
+              <DialogDescription>
+                Choose when you want this article to be automatically published.
+              </DialogDescription>
+            </DialogHeader>
+            
+            <div className="flex flex-col gap-4 py-4">
+              <div className="grid gap-2">
+                <label htmlFor="schedule-date" className="text-sm font-medium">
+                  Publication Date
+                </label>
+                <Input
+                  id="schedule-date"
+                  type="date"
+                  value={scheduledDate}
+                  onChange={(e) => setScheduledDate(e.target.value)}
+                  min={getTomorrowDateString()}
+                  className="w-full"
+                />
+              </div>
+              
+              <div className="grid gap-2">
+                <label htmlFor="schedule-time" className="text-sm font-medium">
+                  Publication Time
+                </label>
+                <Input
+                  id="schedule-time"
+                  type="time"
+                  value={scheduledTime}
+                  onChange={(e) => setScheduledTime(e.target.value)}
+                  className="w-full"
+                />
+              </div>
+              
+              {scheduledDate && (
+                <div className="mt-2 p-3 bg-muted rounded-md">
+                  <p className="text-sm">
+                    Your article will be published on <strong>{scheduledDate}</strong> at <strong>{scheduledTime}</strong>.
+                  </p>
+                </div>
+              )}
+            </div>
+            
+            <DialogFooter>
+              <DialogClose asChild>
+                <Button variant="outline">Cancel</Button>
+              </DialogClose>
+              <Button onClick={handleScheduleArticle} disabled={!scheduledDate}>
+                Schedule Publication
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Preview link */}
+        {showPreviewLink && (
+          <div className="mb-6 p-4 bg-muted rounded-md border">
+            <p className="text-sm flex items-center">
+              <Eye className="w-4 h-4 mr-2" />
+              Preview available at: <a href={previewUrl} target="_blank" className="ml-2 text-primary underline">{previewUrl}</a>
+            </p>
+          </div>
+        )}
+
+        {/* Title input */}
+        <div className="mb-6">
+          <Input
+            type="text"
+            value={data.title}
+            onChange={handleTitleChange}
+            placeholder="Article Title"
+            className="text-3xl font-bold h-14 border-none focus-visible:ring-0 focus-visible:ring-offset-0 px-0"
+          />
+          <Separator className="mt-2" />
+        </div>
+
+        {/* TipTap Rich Text Editor */}
+        <div className="mb-6">
+          <RichTextEditor
+            initialContent={data.content}
+            onUpdate={handleContentChange}
+            onStatsUpdate={({ wordCount, readingTime }) => {
+              setWordCount(wordCount);
+              setReadingTime(readingTime);
+            }}
+            onEditorReady={(editorInstance) => setEditor(editorInstance)}
+            articleUuid={article.uuid} // Pass the article UUID to RichTextEditor
+          />
+        </div>
+
+        {/* Word count and reading time */}
+        <div className="mb-6 flex items-center text-sm text-muted-foreground">
+          <Clock className="w-4 h-4 mr-1" />
+          <span>{wordCount} words · {readingTime} min read</span>
+        </div>
+      </div>
+    </AppLayout>
+  );
+}
+---END FILE CONTENTS---
+
+

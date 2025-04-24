@@ -1,0 +1,138 @@
+:root {
+    /* Color System */
+    --editor-text-default: hsl(240 10% 3.9%);
+    --editor-text-gray: hsl(240 3.8% 46.1%);
+    --editor-bg-default: hsl(0 0% 100%);
+    --editor-bg-subtle: hsl(0 0% 98%);
+    --editor-bg-muted: hsl(240 5% 96%);
+    --editor-border-default: hsl(240 5% 88%);
+    --editor-border-strong: hsl(240 5% 65%);
+    
+    /* Spacing System */
+    --editor-spacing-1: 0.25rem;
+    --editor-spacing-2: 0.5rem;
+    --editor-spacing-4: 1rem;
+    --editor-spacing-6: 1.5rem;
+    --editor-spacing-8: 2rem;
+  }
+  
+  /* Dark Mode Custom Properties */
+  .dark {
+    --editor-text-default: hsl(0 0% 98%);
+    --editor-text-gray: hsl(240 5% 64.9%);
+    --editor-bg-default: hsl(240 10% 3.9%);
+    --editor-bg-subtle: hsl(240 3.7% 15.9%);
+    --editor-bg-muted: hsl(240 5% 26%);
+    --editor-border-default: hsl(240 5% 26%);
+    --editor-border-strong: hsl(240 5% 64.9%);
+  }
+  
+  /* Core Editor Styles */
+  .ProseMirror {
+    caret-color: var(--editor-text-default);
+    outline: none;
+    padding: var(--editor-spacing-4);
+    font-family: system-ui, -apple-system, sans-serif;
+    position: relative;
+    color: var(--editor-text-default);
+    min-height: 500px;
+  }
+  
+  .ProseMirror:focus {
+    outline: none;
+    box-shadow: none;
+  }
+  
+  /* Typography Styles */
+  .ProseMirror p {
+    line-height: 1.75;
+    margin: var(--editor-spacing-4) 0;
+    color: var(--editor-text-default);
+    font-size: 1.125rem;
+  }
+  
+  .ProseMirror h1,
+  .ProseMirror h2,
+  .ProseMirror h3,
+  .ProseMirror h4 {
+    font-weight: 700;
+    color: var(--editor-text-default);
+    line-height: 1.2;
+  }
+  
+  .ProseMirror h1 {
+    font-size: 2.5rem;
+    margin: var(--editor-spacing-8) 0 var(--editor-spacing-4);
+  }
+  
+  .ProseMirror h2 {
+    font-size: 2rem;
+    margin: var(--editor-spacing-8) 0 var(--editor-spacing-4);
+  }
+  
+  .ProseMirror h3 {
+    font-size: 1.5rem;
+    margin: var(--editor-spacing-6) 0 var(--editor-spacing-2);
+  }
+  
+  .ProseMirror h4 {
+    font-size: 1.25rem;
+    margin: var(--editor-spacing-4) 0 var(--editor-spacing-2);
+  }
+  
+  .ProseMirror a {
+    color: #2563eb;
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-thickness: 0.1em;
+    text-underline-offset: 0.2em;
+    transition: all 0.15s ease;
+  }
+  
+  .ProseMirror a:hover {
+    text-decoration-thickness: 0.2em;
+  }
+  
+  /* Lists */
+  .ProseMirror ul,
+  .ProseMirror ol {
+    margin: var(--editor-spacing-4) 0;
+    padding-left: var(--editor-spacing-6);
+  }
+  
+  .ProseMirror li {
+    margin: var(--editor-spacing-2) 0;
+    padding-left: var(--editor-spacing-2);
+  }
+  
+  /* Placeholder Styles */
+  .is-editor-empty::before {
+    color: var(--editor-text-gray);
+    content: attr(data-placeholder);
+    float: left;
+    height: 0;
+    pointer-events: none;
+  }
+  
+  /* Mobile Optimizations */
+  @media (max-width: 640px) {
+    .ProseMirror {
+      padding: var(--editor-spacing-4) var(--editor-spacing-2);
+    }
+  
+    .ProseMirror h1 {
+      font-size: 2rem;
+    }
+    .ProseMirror h2 {
+      font-size: 1.75rem;
+    }
+    .ProseMirror h3 {
+      font-size: 1.5rem;
+    }
+    .ProseMirror h4 {
+      font-size: 1.25rem;
+    }
+    .ProseMirror p {
+      font-size: 1rem;
+    }
+  }

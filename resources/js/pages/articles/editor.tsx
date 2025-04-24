@@ -10,17 +10,6 @@ import {
   ImageIcon,
   Save,
   Upload,
-  Code,
-  Terminal,
-  Link2,
-  List,
-  ListOrdered,
-  Quote,
-  Bold,
-  Italic,
-  Heading1,
-  Heading2,
-  Heading3,
   FileImage,
   CalendarDays,
 } from "lucide-react"
@@ -28,28 +17,26 @@ import { useCallback, useState, useRef, useEffect } from "react"
 import debounce from "lodash/debounce"
 import axios from "axios"
 import DOMPurify from "dompurify"
-import { marked } from "marked"
 
 import AppLayout from "@/layouts/app-layout"
 import type { BreadcrumbItem } from "@/types"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Textarea } from "@/components/ui/textarea"
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
   DialogFooter,
   DialogClose,
 } from "@/components/ui/dialog"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { toast } from "@/components/ui/use-toast"
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { Separator } from "@/components/ui/separator"
-import { ScrollArea } from "@/components/ui/scroll-area"
+import { RichTextEditor } from "@/components/tiptap/rich-text-editor"
+import { htmlToPlainText } from "@/lib/tiptap-utils"
+import { Editor as TiptapEditor } from '@tiptap/react'
 
 // Define types for props and article
 interface ArticleData {
@@ -63,13 +50,6 @@ interface ArticleData {
   slug: string;
 }
 
-interface MediaItem {
-  id: number;
-  url: string;
-  filename: string;
-  mime_type: string;
-}
-
 interface EditorProps {
   article: ArticleData;
   isNewArticle: boolean;
@@ -81,13 +61,11 @@ export default function Editor({ article, isNewArticle }: EditorProps) {
   const [readingTime, setReadingTime] = useState(article.reading_time || 0);
   const [previewUrl, setPreviewUrl] = useState('');
   const [showPreviewLink, setShowPreviewLink] = useState(false);
-  const [media, setMedia] = useState<MediaItem[]>([]);
-  const [uploading, setUploading] = useState(false);
-  const [activeTab, setActiveTab] = useState("write");
   const [showScheduleDialog, setShowScheduleDialog] = useState(false);
   const [scheduledDate, setScheduledDate] = useState<string>('');
   const [scheduledTime, setScheduledTime] = useState<string>('12:00');
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [editor, setEditor] = useState<TiptapEditor | null>(null);
+  const [isPublishing, setIsPublishing] = useState(false);
   
   // Breadcrumb items for navigation
   const breadcrumbItems: BreadcrumbItem[] = [
@@ -107,31 +85,6 @@ export default function Editor({ article, isNewArticle }: EditorProps) {
     content: article.content || '',
   });
 
-  // Load article media on mount
-  useEffect(() => {
-    if (article.uuid) {
-      fetchArticleMedia();
-    }
-  }, [article.uuid]);
-
-  // Fetch media attached to this article
-  const fetchArticleMedia = async () => {
-    try {
-      const response = await axios.get(`/api/articles/${article.uuid}/media`);
-      if (response.data.success) {
-        setMedia(response.data.media);
-      }
-    } catch (error) {
-      console.error('Failed to fetch media:', error);
-      toast({
-        title: "Error",
-        description: "Failed to load media files",
-        variant: "destructive",
-      });
-    }
-  };
-
-  // Save article title with debounce
   const debouncedSaveTitle = useCallback(
     debounce(async (title: string) => {
       try {
@@ -198,11 +151,10 @@ export default function Editor({ article, isNewArticle }: EditorProps) {
     debouncedSaveTitle(newTitle);
   };
 
-  // Handle content change
-  const handleContentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const newContent = e.target.value;
-    setData('content', newContent);
-    debouncedSaveContent(newContent);
+  // Handle content change (from TipTap)
+  const handleContentChange = (content: string) => {
+    setData('content', content);
+    debouncedSaveContent(content);
   };
 
   // Generate preview link
@@ -308,166 +260,53 @@ export default function Editor({ article, isNewArticle }: EditorProps) {
     }
 
     try {
+      setIsPublishing(true);
+      
+      // Add a debug toast
+      toast({
+        title: "Publishing...",
+        description: "Sending request to publish article",
+      });
+      
       const response = await axios.post(`/articles/${article.uuid}/publish`, {
         uuid: article.uuid,
       });
+      
+      console.log("Publish response:", response.data);
       
       if (response.data.success) {
         toast({
           title: "Published",
           description: "Your article has been published successfully",
         });
-        // Navigate to the published article
-        router.visit(response.data.article_url);
+        
+        // Add a short delay before navigation
+        setTimeout(() => {
+          // Navigate to the published article
+          if (response.data.article_url) {
+            window.location.href = response.data.article_url;
+          } else {
+            // Fallback to articles list
+            window.location.href = route('articles.index');
+          }
+        }, 500);
       } else {
         toast({
           title: "Error",
           description: response.data.message || "Failed to publish article",
           variant: "destructive",
         });
+        setIsPublishing(false);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error publishing article:', error);
       toast({
         title: "Error",
-        description: "Failed to publish article",
+        description: error.response?.data?.message || "Failed to publish article",
         variant: "destructive",
       });
+      setIsPublishing(false);
     }
-  };
-
-  // Handle file upload
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-
-    const file = files[0];
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('article_uuid', article.uuid);
-
-    try {
-      setUploading(true);
-      const response = await axios.post('/articles/media', formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
-      });
-      
-      if (response.data.success) {
-        setMedia([...media, response.data.media]);
-        toast({
-          title: "Upload Complete",
-          description: "Image uploaded successfully",
-        });
-      }
-      setUploading(false);
-    } catch (error) {
-      setUploading(false);
-      console.error('Error uploading file:', error);
-      toast({
-        title: "Upload Failed",
-        description: "Failed to upload image",
-        variant: "destructive",
-      });
-    }
-  };
-
-  // Insert text at cursor position
-  const insertAtCursor = (textToInsert: string) => {
-    if (!textareaRef.current) return;
-    
-    const textarea = textareaRef.current;
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
-    const text = textarea.value;
-    
-    const newText = text.substring(0, start) + textToInsert + text.substring(end);
-    setData('content', newText);
-    debouncedSaveContent(newText);
-    
-    // Set cursor position after the inserted text
-    setTimeout(() => {
-      textarea.focus();
-      textarea.selectionStart = start + textToInsert.length;
-      textarea.selectionEnd = start + textToInsert.length;
-    }, 0);
-  };
-
-  // Insert markdown formatting
-  const insertMarkdown = (type: string) => {
-    if (!textareaRef.current) return;
-    
-    const textarea = textareaRef.current;
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
-    const selectedText = textarea.value.substring(start, end);
-    
-    let textToInsert = '';
-    
-    switch (type) {
-      case 'bold':
-        textToInsert = `**${selectedText || 'bold text'}**`;
-        break;
-      case 'italic':
-        textToInsert = `*${selectedText || 'italic text'}*`;
-        break;
-      case 'h1':
-        textToInsert = `\n# ${selectedText || 'Heading 1'}\n`;
-        break;
-      case 'h2':
-        textToInsert = `\n## ${selectedText || 'Heading 2'}\n`;
-        break;
-      case 'h3':
-        textToInsert = `\n### ${selectedText || 'Heading 3'}\n`;
-        break;
-      case 'link':
-        textToInsert = `[${selectedText || 'link text'}](url)`;
-        break;
-      case 'image':
-        textToInsert = `![${selectedText || 'image alt text'}](image-url)`;
-        break;
-      case 'code':
-        textToInsert = `\`${selectedText || 'code'}\``;
-        break;
-      case 'codeblock':
-        textToInsert = `\n\`\`\`\n${selectedText || 'code block'}\n\`\`\`\n`;
-        break;
-      case 'unorderedlist':
-        textToInsert = `\n- ${selectedText || 'List item'}\n- Another item\n- And another\n`;
-        break;
-      case 'orderedlist':
-        textToInsert = `\n1. ${selectedText || 'First item'}\n2. Second item\n3. Third item\n`;
-        break;
-      case 'quote':
-        textToInsert = `\n> ${selectedText || 'Blockquote text'}\n`;
-        break;
-      default:
-        textToInsert = selectedText;
-    }
-    
-    const newText = textarea.value.substring(0, start) + textToInsert + textarea.value.substring(end);
-    setData('content', newText);
-    debouncedSaveContent(newText);
-    
-    setTimeout(() => {
-      textarea.focus();
-      const newCursorPos = start + textToInsert.length;
-      textarea.selectionStart = newCursorPos;
-      textarea.selectionEnd = newCursorPos;
-    }, 0);
-  };
-
-  // Insert image from media gallery
-  const insertImageFromGallery = (imageUrl: string, altText: string) => {
-    const markdownImage = `![${altText}](${imageUrl})`;
-    insertAtCursor(markdownImage);
-  };
-
-  // Parse markdown to HTML for preview
-  const renderMarkdown = () => {
-    const sanitizedHtml = DOMPurify.sanitize(marked.parse(data.content));
-    return { __html: sanitizedHtml };
   };
 
   // Get tomorrow's date in YYYY-MM-DD format for the date input min value
@@ -527,8 +366,16 @@ export default function Editor({ article, isNewArticle }: EditorProps) {
               variant="default" 
               size="sm" 
               onClick={handlePublish}
+              disabled={isPublishing}
             >
-              Publish
+              {isPublishing ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Publishing...
+                </>
+              ) : (
+                'Publish'
+              )}
             </Button>
           </div>
         </div>
@@ -613,274 +460,24 @@ export default function Editor({ article, isNewArticle }: EditorProps) {
           <Separator className="mt-2" />
         </div>
 
-        {/* Main editor with tabs */}
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="mb-6">
-          <TabsList>
-            <TabsTrigger value="write">Write</TabsTrigger>
-            <TabsTrigger value="preview">Preview</TabsTrigger>
-          </TabsList>
-          
-          <div className="mt-2 border rounded-md">
-            {/* Markdown toolbar */}
-            <div className="flex flex-wrap items-center gap-1 p-2 bg-muted rounded-t-md border-b">
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button 
-                      variant="ghost" 
-                      size="sm" 
-                      onClick={() => insertMarkdown('bold')}
-                    >
-                      <Bold className="w-4 h-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Bold</TooltipContent>
-                </Tooltip>
-                
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button 
-                      variant="ghost" 
-                      size="sm" 
-                      onClick={() => insertMarkdown('italic')}
-                    >
-                      <Italic className="w-4 h-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Italic</TooltipContent>
-                </Tooltip>
-                
-                <Separator orientation="vertical" className="h-6 mx-1" />
-                
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button 
-                      variant="ghost" 
-                      size="sm" 
-                      onClick={() => insertMarkdown('h1')}
-                    >
-                      <Heading1 className="w-4 h-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Heading 1</TooltipContent>
-                </Tooltip>
-                
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button 
-                      variant="ghost" 
-                      size="sm" 
-                      onClick={() => insertMarkdown('h2')}
-                    >
-                      <Heading2 className="w-4 h-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Heading 2</TooltipContent>
-                </Tooltip>
-                
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button 
-                      variant="ghost" 
-                      size="sm" 
-                      onClick={() => insertMarkdown('h3')}
-                    >
-                      <Heading3 className="w-4 h-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Heading 3</TooltipContent>
-                </Tooltip>
-                
-                <Separator orientation="vertical" className="h-6 mx-1" />
-                
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button 
-                      variant="ghost" 
-                      size="sm" 
-                      onClick={() => insertMarkdown('link')}
-                    >
-                      <Link2 className="w-4 h-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Link</TooltipContent>
-                </Tooltip>
-                
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button 
-                      variant="ghost" 
-                      size="sm" 
-                      onClick={() => insertMarkdown('image')}
-                    >
-                      <ImageIcon className="w-4 h-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Image</TooltipContent>
-                </Tooltip>
-                
-                <Separator orientation="vertical" className="h-6 mx-1" />
-                
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button 
-                      variant="ghost" 
-                      size="sm" 
-                      onClick={() => insertMarkdown('code')}
-                    >
-                      <Code className="w-4 h-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Inline Code</TooltipContent>
-                </Tooltip>
-                
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button 
-                      variant="ghost" 
-                      size="sm" 
-                      onClick={() => insertMarkdown('codeblock')}
-                    >
-                      <Terminal className="w-4 h-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Code Block</TooltipContent>
-                </Tooltip>
-                
-                <Separator orientation="vertical" className="h-6 mx-1" />
-                
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button 
-                      variant="ghost" 
-                      size="sm" 
-                      onClick={() => insertMarkdown('unorderedlist')}
-                    >
-                      <List className="w-4 h-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Bullet List</TooltipContent>
-                </Tooltip>
-                
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button 
-                      variant="ghost" 
-                      size="sm" 
-                      onClick={() => insertMarkdown('orderedlist')}
-                    >
-                      <ListOrdered className="w-4 h-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Numbered List</TooltipContent>
-                </Tooltip>
-                
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button 
-                      variant="ghost" 
-                      size="sm" 
-                      onClick={() => insertMarkdown('quote')}
-                    >
-                      <Quote className="w-4 h-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Blockquote</TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-            </div>
-            
-            {/* Tab content */}
-            <TabsContent value="write" className="p-0 m-0">
-              <Textarea
-                ref={textareaRef}
-                value={data.content}
-                onChange={handleContentChange}
-                placeholder="Start writing your article using Markdown..."
-                className="min-h-[500px] resize-y rounded-none border-none focus-visible:ring-0 focus-visible:ring-offset-0 p-4 font-mono text-sm"
-              />
-            </TabsContent>
-            
-            <TabsContent value="preview" className="p-0 m-0">
-              <div className="min-h-[500px] p-4 prose dark:prose-invert max-w-none">
-                {data.content ? (
-                  <div dangerouslySetInnerHTML={renderMarkdown()} />
-                ) : (
-                  <p className="text-muted-foreground italic">No content to preview yet.</p>
-                )}
-              </div>
-            </TabsContent>
-          </div>
-        </Tabs>
+        {/* TipTap Rich Text Editor */}
+        <div className="mb-6">
+          <RichTextEditor
+            initialContent={data.content}
+            onUpdate={handleContentChange}
+            onStatsUpdate={({ wordCount, readingTime }) => {
+              setWordCount(wordCount);
+              setReadingTime(readingTime);
+            }}
+            onEditorReady={(editorInstance) => setEditor(editorInstance)}
+            articleUuid={article.uuid} // Pass the article UUID to RichTextEditor
+          />
+        </div>
 
         {/* Word count and reading time */}
         <div className="mb-6 flex items-center text-sm text-muted-foreground">
           <Clock className="w-4 h-4 mr-1" />
           <span>{wordCount} words · {readingTime} min read</span>
-        </div>
-
-        {/* Media gallery */}
-        <div className="border rounded-md">
-          <div className="p-4 bg-muted border-b flex items-center justify-between">
-            <h3 className="font-medium">Media Gallery</h3>
-            <div>
-              <label htmlFor="file-upload" className="cursor-pointer">
-                <Button variant="outline" size="sm" asChild>
-                  <div>
-                    <Upload className="w-4 h-4 mr-2" />
-                    Upload Image
-                  </div>
-                </Button>
-                <input 
-                  id="file-upload" 
-                  type="file"
-                  onChange={handleFileUpload}
-                  accept="image/*"
-                  className="hidden"
-                />
-              </label>
-            </div>
-          </div>
-          
-          <div className="p-4">
-            {uploading && (
-              <div className="mb-4 text-sm text-muted-foreground flex items-center">
-                <Upload className="w-4 h-4 mr-2 animate-pulse" />
-                Uploading image...
-              </div>
-            )}
-            
-            {media.length > 0 ? (
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                {media.map((item) => (
-                  <div key={item.id} className="relative group border rounded-md overflow-hidden">
-                    <img 
-                      src={item.url} 
-                      alt={item.filename} 
-                      className="w-full h-40 object-cover"
-                    />
-                    <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-40 transition-all flex items-center justify-center opacity-0 group-hover:opacity-100">
-                      <Button 
-                        variant="secondary" 
-                        size="sm"
-                        onClick={() => insertImageFromGallery(item.url, item.filename)}
-                      >
-                        Insert
-                      </Button>
-                    </div>
-                    <div className="p-2 text-xs truncate border-t bg-muted">
-                      {item.filename}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="py-8 text-center text-muted-foreground flex flex-col items-center justify-center">
-                <FileImage className="w-12 h-12 mb-2 opacity-20" />
-                <p>No media uploaded yet.</p>
-              </div>
-            )}
-          </div>
         </div>
       </div>
     </AppLayout>
