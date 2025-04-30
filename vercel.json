@@ -1,44 +1,22 @@
 {
     "version": 2,
-    "buildCommand": "composer install --optimize-autoloader --no-dev && php artisan config:cache && php artisan route:cache && php artisan view:cache",
-    "installCommand": "composer install",
-    "devCommand": "php artisan serve",
-    "outputDirectory": "public",
-    "framework": null,
-    "builds": [
-        { 
-            "src": "api/index.php", 
-            "use": "@vercel/php@0.6.0",
-            "config": {
-                "version": "8.2",
-                "memory": 3008,
-                "maxLambdaSize": "50mb"
-            }
+    "regions": [
+        "fra1"
+    ],
+    "functions": {
+        "api/index.php": {
+            "runtime": "vercel-php@0.7.1"
+        }
+    },
+    "routes": [
+        {
+            "src": "/build/(.*)",
+            "dest": "/build/$1"
+        },
+        {
+            "src": "/(.*)",
+            "dest": "/api/index.php"
         }
     ],
-    "routes": [
-        { "src": "/(.*)", "dest": "/api/index.php" }
-    ],
-    "env": {
-        "APP_NAME": "Laravel",
-        "APP_ENV": "production",
-        "APP_KEY": "base64:J4ed761LbEcqCoHk5J24eqHQbi78MvYkKNW6gXof8nQ=",
-        "APP_DEBUG": "false",
-        "APP_URL": "https://madwanzi.com",
-        
-        "DB_CONNECTION": "sqlite",
-        "SESSION_DRIVER": "file",
-        "CACHE_STORE": "file",
-        
-        "APP_CONFIG_CACHE": "/tmp/config.php",
-        "APP_EVENTS_CACHE": "/tmp/events.php",
-        "APP_PACKAGES_CACHE": "/tmp/packages.php",
-        "APP_ROUTES_CACHE": "/tmp/routes.php",
-        "APP_SERVICES_CACHE": "/tmp/services.php",
-        "VIEW_COMPILED_PATH": "/tmp",
-
-        "LOG_CHANNEL": "stderr",
-        "SESSION_LIFETIME": "120"
-    },
-    "regions": ["dub1"]
+    "outputDirectory": "public"
 }

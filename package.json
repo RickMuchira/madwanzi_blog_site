@@ -1,6 +1,9 @@
 {
     "private": true,
     "type": "module",
+    "engines": {
+        "node": "18.x"
+    },
     "scripts": {
         "build": "vite build",
         "build:ssr": "vite build && vite build --ssr",
@@ -77,6 +80,7 @@
         "clsx": "^2.1.1",
         "cmdk": "^1.1.1",
         "concurrently": "^9.0.1",
+        "crypto-browserify": "^3.12.1",
         "date-fns": "^4.1.0",
         "dompurify": "^3.2.5",
         "globals": "^15.14.0",
